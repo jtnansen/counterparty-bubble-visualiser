@@ -324,36 +324,57 @@ const App = () => {
       }
     });
 
-    const zoom = d3.zoom()
-      .scaleExtent([0.1, 10])
-      .on('zoom', (event) => {
-        const { transform } = event;
-        setCurrentTransform(transform);
-        svg.select('g.zoom-container')
-          .attr('transform', transform);
-        
-        link
-          .attr('stroke-width', 1 / transform.k);
-        
-        node.each(function(d) {
-          const circle = d3.select(this).select('circle');
-          const text = d3.select(this).select('text');
-          const radius = parseFloat(circle.attr('r'));
-          const fontSize = Math.min(12 / transform.k, radius * 1.5);
-          text.style('font-size', `${fontSize}px`);
-          
-          // Scale stroke-width with zoom to maintain constant visual width
-          if (!d.isMain) {
-            const baseStrokeWidth = customHighlights.has(d.id) ? 
-                3.4 : 
-                Math.max(1, radius * 0.1);
-            circle.attr('stroke-width', baseStrokeWidth / transform.k);
-          }
-        });
-      });
-
+    // First create the container
     const container = svg.append('g')
-      .attr('class', 'zoom-container');
+        .attr('class', 'zoom-container');
+
+    // Then set up zoom behavior
+    const zoom = d3.zoom()
+        .scaleExtent([0.1, 10])
+        .on('zoom', (event) => {
+            const { transform } = event;
+            setCurrentTransform(transform);
+            
+            // Use CSS transform instead of attr transform for better performance
+            container.style('transform', `translate(${transform.x}px,${transform.y}px) scale(${transform.k})`);
+            
+            // Batch DOM updates using requestAnimationFrame
+            requestAnimationFrame(() => {
+                // Update link stroke width only if zoom level changed significantly
+                if (Math.abs(lastZoomK - transform.k) > 0.01) {
+                    link.attr('stroke-width', 1 / transform.k);
+                    lastZoomK = transform.k;
+                }
+                
+                // Use more efficient selection and update strategy
+                node.each(function(d) {
+                    const el = d3.select(this);
+                    const circle = el.select('circle');
+                    const text = el.select('text');
+                    const radius = parseFloat(circle.attr('r'));
+                    
+                    // Cache computed values
+                    const fontSize = Math.min(12 / transform.k, radius * 1.5);
+                    
+                    // Batch style updates
+                    if (!d.isMain) {
+                        const baseStrokeWidth = customHighlights.has(d.id) ? 
+                            3.4 : 
+                            Math.max(1, radius * 0.1);
+                        circle.style('stroke-width', `${baseStrokeWidth / transform.k}px`);
+                    }
+                    text.style('font-size', `${fontSize}px`);
+                });
+            });
+        });
+
+    // Add this variable to track zoom level changes
+    let lastZoomK = 1;
+
+    // Use hardware acceleration for transforms
+    container.style('transform-origin', '0 0')
+        .style('backface-visibility', 'hidden')
+        .style('will-change', 'transform');
 
     // Add arrow marker definition
     const defs = svg.append('defs');
@@ -585,21 +606,30 @@ Total Volume: ${formatNumber(totalVolume)}${d.isSmartContract ? '\nSmart Contrac
         }
       });
 
-    // Handle right-click on nodes
+    // Add click handler to hide context menu when clicking outside
+    svg.on('click', () => {
+        // Hide context menu
+        d3.selectAll('.context-menu').style('display', 'none');
+        // Also hide any color menus
+        d3.selectAll('.color-menu').remove();
+    });
+
+    // Modify the node contextmenu handler to stop event propagation
     node.on('contextmenu', function(event, d) {
-      event.preventDefault();
+        event.preventDefault();
+        event.stopPropagation(); // Stop event from bubbling up to svg
 
-      // Hide any existing color menus
-      d3.selectAll('.color-menu').remove();
+        // Hide any existing color menus
+        d3.selectAll('.color-menu').remove();
 
-      menu
-        .style('display', 'block')
-        .style('left', `${event.pageX}px`)
-        .style('top', `${event.pageY}px`);
+        menu
+            .style('display', 'block')
+            .style('left', `${event.pageX}px`)
+            .style('top', `${event.pageY}px`);
 
-      // Store the selected node and its DOM element
-      menu.node().__data__ = d;
-      menu.node().__element__ = this;
+        // Store the selected node and its DOM element
+        menu.node().__data__ = d;
+        menu.node().__element__ = this;
     });
 
     simulation
