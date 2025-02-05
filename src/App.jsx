@@ -564,29 +564,19 @@ Total Volume: ${formatNumber(totalVolume)}${d.isSmartContract ? '\nSmart Contrac
 
     function ticked() {
       link.attr('d', function(d) {
-        // Check if both nodes are main nodes by looking up their current status
         const sourceNode = addressMap.get(d.source.id || d.source);
         const targetNode = addressMap.get(d.target.id || d.target);
         
         if (sourceNode.isMain && targetNode.isMain) {
-          // Find all links between these two main nodes
-          const allLinks = links.filter(l => 
-            (l.source.id === sourceNode.id && l.target.id === targetNode.id) ||
-            (l.source.id === targetNode.id && l.target.id === sourceNode.id)
-          );
+          // Get the netflow value from the source node's transactions
+          const sourceTransactions = data.find(set => set.mainAddress === sourceNode.id)?.transactions || [];
+          const transaction = sourceTransactions.find(t => t.interactingAddress === targetNode.id);
+          const netflow = transaction ? parseFloat(transaction.usdNetflow) : 0;
           
-          // Calculate net flow between the nodes
-          const netFlow = allLinks.reduce((sum, l) => {
-            if (l.source.id === sourceNode.id) {
-              return sum + l.value;
-            } else {
-              return sum - l.value;
-            }
-          }, 0);
-          
-          // Only show arrow if this link represents the net flow direction
-          const isNetFlowLink = (netFlow > 0 && d.source.id === sourceNode.id) ||
-                               (netFlow < 0 && d.source.id === targetNode.id);
+          // FLIPPED LOGIC:
+          // If netflow is positive, money is flowing TO source, arrow points FROM target TO source
+          // If netflow is negative, money is flowing FROM source, arrow points FROM source TO target
+          const isNetFlowLink = netflow < 0;  // Flipped from > to <
           
           const midX = (d.source.x + d.target.x) / 2;
           const midY = (d.source.y + d.target.y) / 2;
