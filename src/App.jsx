@@ -19,6 +19,12 @@ const App = () => {
   const [currentTransform, setCurrentTransform] = useState(null);
   const [selectedNodes, setSelectedNodes] = useState(new Set());
 
+  // Add these color constants near the top of the file, after the useState declarations
+  const GREEN_FILL = '#34CF82';
+  const RED_FILL = '#FF7F7B';
+  const GREEN_STROKE = '#29A568'; // 20% darker than #34CF82
+  const RED_STROKE = '#CC6562'; // 20% darker than #FF7F7B
+
   const handleFileUpload = (event) => {
     const file = event.target.files[0];
     const fileName = file.name;
@@ -322,15 +328,12 @@ const App = () => {
       .scaleExtent([0.1, 10])
       .on('zoom', (event) => {
         const { transform } = event;
-        setCurrentTransform(transform); // Store current transform
+        setCurrentTransform(transform);
         svg.select('g.zoom-container')
           .attr('transform', transform);
         
         link
           .attr('stroke-width', 1 / transform.k);
-        
-        node.selectAll('circle')
-          .attr('stroke-width', 2.6 / transform.k);
         
         node.each(function(d) {
           const circle = d3.select(this).select('circle');
@@ -338,6 +341,14 @@ const App = () => {
           const radius = parseFloat(circle.attr('r'));
           const fontSize = Math.min(12 / transform.k, radius * 1.5);
           text.style('font-size', `${fontSize}px`);
+          
+          // Scale stroke-width with zoom to maintain constant visual width
+          if (!d.isMain) {
+            const baseStrokeWidth = customHighlights.has(d.id) ? 
+                3.4 : 
+                Math.max(1, radius * 0.1);
+            circle.attr('stroke-width', baseStrokeWidth / transform.k);
+          }
         });
       });
 
@@ -385,18 +396,33 @@ const App = () => {
 
     node.append('circle')
       .attr('r', d => calculateRadius(d))
-      .attr('fill', d => d.isMain ? '#FFFFFF' : (d.usdNetflow > 0 ? '#34CF82' : '#FF7F7B'))
+      .attr('fill', d => d.isMain ? '#FFFFFF' : (d.usdNetflow > 0 ? GREEN_FILL : RED_FILL))
       .attr('stroke', d => {
         const customHighlight = customHighlights.get(d.id);
         if (customHighlight) return customHighlight;
-        return (!d.isMain && highlightShared && d.connectedMainAddresses.size > 1) ? '#008EFF' : 'none';
+        if (!d.isMain) {
+            if (highlightShared && d.connectedMainAddresses.size > 1) {
+                return '#008EFF';
+            }
+            return d.usdNetflow > 0 ? GREEN_STROKE : RED_STROKE;
+        }
+        return 'none';
       })
-      .attr('stroke-width', d => customHighlights.has(d.id) ? 3.4 : 2.6);
+      .attr('stroke-width', d => {
+        if (customHighlights.has(d.id)) return 3.4;
+        if (!d.isMain) {
+            const radius = calculateRadius(d);
+            return Math.max(1, radius * 0.1); // 10% of radius, minimum 1px
+        }
+        return 0;
+      });
 
     node.append('text')
       .text(d => {
         // Get first 6 characters without assuming "0x" prefix
         const addressStart = d.address.slice(0, 6);
+        const customLabel = customLabels.get(d.id);
+        if (customLabel) return customLabel;
         return `${addressStart}${d.isSmartContract ? ' 🤖' : ''}${d.isExchange ? ' 🏦' : ''}`;
       })
       .attr('dy', 4)
@@ -528,20 +554,31 @@ Total Volume: ${formatNumber(totalVolume)}${d.isSmartContract ? '\nSmart Contrac
             const nodeId = selectedNode.id;
             menu.style('display', 'none');
             
-            setDeletedNodes(prev => new Set(prev).add(nodeId));
-            
-            const newLinks = links.filter(l => l.source.id !== nodeId && l.target.id !== nodeId);
-            const newNodes = nodes.filter(n => n.id !== nodeId);
-            
-            nodeElement.remove();
-            link.filter(l => l.source.id === nodeId || l.target.id === nodeId).remove();
-            
-            simulation
-              .nodes(newNodes)
-              .force('link', d3.forceLink(newLinks).id(d => d.id).distance(100));
-            
-            links = newLinks;
-            nodes = newNodes;
+            if (selectedNode.isMain) {
+                // Remove the main node's data from the data array
+                setData(prevData => prevData.filter(d => d.mainAddress !== nodeId));
+                
+                // Don't add main nodes to deletedNodes since we're removing their data completely
+                // Just trigger visualization update - the createVisualization function will
+                // rebuild everything based on the remaining data
+                createVisualization(data.filter(d => d.mainAddress !== nodeId));
+            } else {
+                // Original code for deleting counterparty nodes
+                setDeletedNodes(prev => new Set(prev).add(nodeId));
+                
+                const newLinks = links.filter(l => l.source.id !== nodeId && l.target.id !== nodeId);
+                const newNodes = nodes.filter(n => n.id !== nodeId);
+                
+                nodeElement.remove();
+                link.filter(l => l.source.id === nodeId || l.target.id === nodeId).remove();
+                
+                simulation
+                    .nodes(newNodes)
+                    .force('link', d3.forceLink(newLinks).id(d => d.id).distance(100));
+                
+                links = newLinks;
+                nodes = newNodes;
+            }
             
             simulation.alpha(1).restart();
             break;
@@ -551,7 +588,6 @@ Total Volume: ${formatNumber(totalVolume)}${d.isSmartContract ? '\nSmart Contrac
     // Handle right-click on nodes
     node.on('contextmenu', function(event, d) {
       event.preventDefault();
-      if (d.isMain) return; // Prevent context menu on main nodes
 
       // Hide any existing color menus
       d3.selectAll('.color-menu').remove();
