@@ -154,22 +154,40 @@ const App = () => {
     const simulation = d3.forceSimulation()
         .force('link', d3.forceLink().id(d => d.id).distance(100))
         .force('charge', d3.forceManyBody()
-            .strength(d => d.isMain ? -800 : -400)) // Stronger repulsion for main nodes
+            .strength(d => d.isMain ? -1200 : -400)) // Increased repulsion for main nodes
         .force('center', d3.forceCenter(window.innerWidth / 2, window.innerHeight / 2))
         .force('collision', d3.forceCollide().radius(d => {
             const baseRadius = calculateRadius(d);
-            // Add extra padding around main nodes
-            return d.isMain ? baseRadius * 2 : baseRadius + 5;
-        }).strength(0.8)); // Increase collision strength
+            // Add much more padding around main nodes
+            return d.isMain ? baseRadius * 3 : baseRadius + 2;
+        }).strength(0.95)) // Increased collision strength
+        .force('mainNodeRepulsion', d => {
+            // Custom force to push non-main nodes away from main nodes
+            return function(alpha) {
+                const nodes = simulation.nodes();
+                const mainNodes = nodes.filter(n => n.isMain);
+                
+                nodes.forEach(node => {
+                    if (!node.isMain) {
+                        mainNodes.forEach(mainNode => {
+                            const dx = node.x - mainNode.x;
+                            const dy = node.y - mainNode.y;
+                            const distance = Math.sqrt(dx * dx + dy * dy);
+                            const minDistance = calculateRadius(mainNode) * 4; // Minimum safe distance
+                            
+                            if (distance < minDistance) {
+                                const force = (minDistance - distance) / distance * alpha;
+                                node.vx += dx * force;
+                                node.vy += dy * force;
+                            }
+                        });
+                    }
+                });
+            };
+        });
 
-    // Add an additional force to push non-main nodes away from main nodes
-    simulation.force('mainNodeRepulsion', d3.forceManyBody()
-        .strength((d, i) => {
-            if (d.isMain) return 0; // Main nodes don't repel each other
-            return -600; // Strong repulsion for non-main nodes from main nodes
-        })
-        .distanceMax(300) // Limit the distance of repulsion effect
-    );
+    // Add velocity decay to reduce oscillation
+    simulation.velocityDecay(0.4); // Increased from default 0.4 to reduce "bounciness"
 
     const svg = d3.select(svgRef.current);
     const width = window.innerWidth;
