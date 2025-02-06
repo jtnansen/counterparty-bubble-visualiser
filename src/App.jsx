@@ -20,10 +20,12 @@ const App = () => {
   const [selectedNodes, setSelectedNodes] = useState(new Set());
 
   // Add these color constants near the top of the file, after the useState declarations
-  const GREEN_FILL = '#34CF82';
-  const RED_FILL = '#FF7F7B';
-  const GREEN_STROKE = '#29A568'; // 20% darker than #34CF82
-  const RED_STROKE = '#CC6562'; // 20% darker than #FF7F7B
+  const GREEN_FILL = '#061019';//'#34CF82';
+  const RED_FILL = '#061019';//'#FF7F7B';
+  const GREEN_STROKE = '#34CF82';//'#29A568'; // 20% darker than #34CF82
+  const RED_STROKE = '#FF7F7B'; //'#CC6562'; // 20% darker than #FF7F7B
+  const NAVY_FILL = '#2a3f50';//'#061019';  // Dark navy color matching the nav bar
+  const MAIN_NODE_STROKE ='#061019'; //'#2a3f50';  // Light grey that matches the border color used in UI
 
   const handleFileUpload = (event) => {
     const file = event.target.files[0];
@@ -101,7 +103,7 @@ const App = () => {
   }, [data, sizeMetric, showSmartContracts, showExchanges, rangeMin, rangeMax, highlightShared, scaleFactor, deletedNodes]);
 
   const calculateRadius = (d) => {
-    if (d.isMain) return 20; // Main bubbles stay the same size
+    if (d.isMain) return 30; // Increased from 20 to 26 (30% bigger)
     
     let value;
     if (sizeMetric === 'totalVolume') {
@@ -417,47 +419,51 @@ const App = () => {
 
     node.append('circle')
       .attr('r', d => calculateRadius(d))
-      .attr('fill', d => d.isMain ? '#FFFFFF' : (d.usdNetflow > 0 ? GREEN_FILL : RED_FILL))
+      .attr('fill', d => d.isMain ? NAVY_FILL : (d.usdNetflow > 0 ? GREEN_FILL : RED_FILL))
       .attr('stroke', d => {
         const customHighlight = customHighlights.get(d.id);
         if (customHighlight) return customHighlight;
-        if (!d.isMain) {
-            if (highlightShared && d.connectedMainAddresses.size > 1) {
-                return '#008EFF';
-            }
-            return d.usdNetflow > 0 ? GREEN_STROKE : RED_STROKE;
+        if (d.isMain) {
+            return MAIN_NODE_STROKE;
         }
-        return 'none';
+        if (highlightShared && d.connectedMainAddresses.size > 1) {
+            return '#008EFF';
+        }
+        return d.usdNetflow > 0 ? GREEN_STROKE : RED_STROKE;
       })
       .attr('stroke-width', d => {
         if (customHighlights.has(d.id)) return 3.4;
-        if (!d.isMain) {
-            const radius = calculateRadius(d);
-            return Math.max(1, radius * 0.1); // 10% of radius, minimum 1px
-        }
-        return 0;
+        if (d.isMain) return 2;  // Consistent rim width for main nodes
+        const radius = calculateRadius(d);
+        return Math.max(1, radius * 0.1);
       });
 
     node.append('text')
       .text(d => {
-        // Get first 6 characters without assuming "0x" prefix
         const addressStart = d.address.slice(0, 6);
         const customLabel = customLabels.get(d.id);
         if (customLabel) return customLabel;
         return `${addressStart}${d.isSmartContract ? ' 🤖' : ''}${d.isExchange ? ' 🏦' : ''}`;
-      })
-      .attr('dy', 4)
-      .attr('fill', d => d.isMain ? '#000000' : '#FFFFFF');
+    })
+    .attr('dy', 4)
+    .attr('fill', '#FFFFFF')
+    .style('font-weight', d => customLabels.has(d.id) ? '900' : 'normal');  // Ultra bold (900) for temporary labels
 
     node.append('title')
       .text(d => {
+        if (d.isMain) {
+            return `Main Address: ${d.address}
+Label: ${customLabels.get(d.id) || d.address.slice(0, 6)}`;
+        }
+        
         const totalVolume = d.volIn + d.volOut;
         return `Address: ${d.address}
-Label: ${d.label || 'Main Address'}
+Label: ${d.label || 'N/A'}
 Netflow: ${formatNumber(d.usdNetflow)}
 Volume In: ${formatNumber(d.volIn)}
 Volume Out: ${formatNumber(d.volOut)}
-Total Volume: ${formatNumber(totalVolume)}${d.isSmartContract ? '\nSmart Contract' : ''}${d.isExchange ? '\nExchange' : ''}${!d.isMain ? `\nConnected to ${d.connectedMainAddresses.size} main address(es)` : ''}`;
+Total Volume: ${formatNumber(totalVolume)}${d.isSmartContract ? '\nSmart Contract' : ''}${d.isExchange ? '\nExchange' : ''}
+Connected to ${d.connectedMainAddresses.size} main address(es)`;
       });
 
     node.on('click', (event, d) => {
