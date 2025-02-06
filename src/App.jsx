@@ -54,9 +54,15 @@ const App = () => {
           return acc;
         }, {});
 
+        // Filter out nodes with total volume less than 1
+        const filteredData = Object.values(aggregatedData).filter(d => {
+          const totalVolume = Math.abs(parseFloat(d.volIn)) + Math.abs(parseFloat(d.volOut));
+          return totalVolume >= 1;
+        });
+
         setData(prevData => [...prevData, {
           mainAddress: address,
-          transactions: Object.values(aggregatedData)
+          transactions: filteredData
         }]);
       },
     });
@@ -719,6 +725,56 @@ Connected to ${d.connectedMainAddresses.size} main address(es)`;
           .attr('stroke', highlightColor)
           .attr('stroke-width', 2.6);
       }
+    });
+
+    // Add a custom force to repel nodes from the line between main nodes
+    function arrowRepulsionForce(alpha) {
+        nodes.forEach(node => {
+            if (!node.isMain) {
+                links.forEach(link => {
+                    const sourceNode = addressMap.get(link.source.id || link.source);
+                    const targetNode = addressMap.get(link.target.id || link.target);
+
+                    if (sourceNode.isMain && targetNode.isMain) {
+                        const lineVec = { x: targetNode.x - sourceNode.x, y: targetNode.y - sourceNode.y };
+                        const nodeVec = { x: node.x - sourceNode.x, y: node.y - sourceNode.y };
+                        const lineLength = Math.sqrt(lineVec.x * lineVec.x + lineVec.y * lineVec.y);
+                        const projection = (nodeVec.x * lineVec.x + nodeVec.y * lineVec.y) / lineLength;
+                        const closestPoint = {
+                            x: sourceNode.x + (projection / lineLength) * lineVec.x,
+                            y: sourceNode.y + (projection / lineLength) * lineVec.y
+                        };
+                        const distToLine = Math.sqrt((node.x - closestPoint.x) ** 2 + (node.y - closestPoint.y) ** 2);
+
+                        const minDistance = 70; // Further increased minimum distance
+                        if (distToLine < minDistance) {
+                            const force = (minDistance - distToLine) / distToLine * alpha;
+                            node.vx += (node.x - closestPoint.x) * force;
+                            node.vy += (node.y - closestPoint.y) * force;
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    // Add this force to the simulation
+    simulation.force('arrowRepulsion', arrowRepulsionForce);
+
+    // Modify the link path to use a curved path
+    link.attr('d', function(d) {
+        const sourceNode = addressMap.get(d.source.id || d.source);
+        const targetNode = addressMap.get(d.target.id || d.target);
+
+        if (sourceNode.isMain && targetNode.isMain) {
+            const midX = (d.source.x + d.target.x) / 2;
+            const midY = (d.source.y + d.target.y) / 2;
+            const controlX = midX + (d.target.y - d.source.y) * 0.6; // Further increased curvature
+            const controlY = midY - (d.target.x - d.source.x) * 0.6;
+            return `M${d.source.x},${d.source.y} Q${controlX},${controlY} ${d.target.x},${d.target.y}`;
+        } else {
+            return `M${d.source.x},${d.source.y} L${d.target.x},${d.target.y}`;
+        }
     });
   };
 
