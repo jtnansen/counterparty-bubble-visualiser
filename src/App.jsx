@@ -1,16 +1,21 @@
 import React, { useState, useRef, useEffect } from 'react';
 import * as d3 from 'd3';
 import Papa from 'papaparse';
+import { fetchCounterparties } from './services/nansenApi';
 
 const App = () => {
   const [data, setData] = useState([]);
-  const [sizeMetric, setSizeMetric] = useState('totalVolume');
+  const [sizeMetric, setSizeMetric] = useState('uniform');
   const [showSmartContracts, setShowSmartContracts] = useState(true);
   const [showExchanges, setShowExchanges] = useState(true);
-  const [rangeMin, setRangeMin] = useState('');
+  const [rangeMin, setRangeMin] = useState('1');
   const [rangeMax, setRangeMax] = useState('');
   const [highlightShared, setHighlightShared] = useState(false);
   const [scaleFactor, setScaleFactor] = useState(1);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [walletAddress, setWalletAddress] = useState('');
+  const [labelMode, setLabelMode] = useState('address'); // 'label' or 'address' - default to 'address'
   const svgRef = useRef(null);
   const [contextMenu, setContextMenu] = useState({ visible: false, x: 0, y: 0, node: null });
   const [customLabels, setCustomLabels] = useState(new Map());
@@ -18,6 +23,11 @@ const App = () => {
   const [deletedNodes, setDeletedNodes] = useState(new Set());
   const [currentTransform, setCurrentTransform] = useState(null);
   const [selectedNodes, setSelectedNodes] = useState(new Set());
+  const [deletedNodesData, setDeletedNodesData] = useState(new Map()); // Store full node data for restoration
+  const [timeframe, setTimeframe] = useState('30D');
+  const [isReloading, setIsReloading] = useState(false);
+  const [reloadProgress, setReloadProgress] = useState({ current: 0, total: 0 });
+  const [lockedNodes, setLockedNodes] = useState(new Set()); // Track manually positioned nodes
 
   // Add these color constants near the top of the file, after the useState declarations
   const GREEN_FILL = '#061019';//'#34CF82';
@@ -68,48 +78,179 @@ const App = () => {
     });
   };
 
+  const handleApiDataFetch = async (address = null) => {
+    const addressToFetch = String(address || walletAddress).trim();
+    
+    if (!addressToFetch) {
+      setError('Please enter a wallet address');
+      return;
+    }
+
+    // Validate address format
+    const isEthereumAddress = addressToFetch.startsWith('0x') && addressToFetch.length === 42;
+    const isSolanaAddress = addressToFetch.length >= 32 && addressToFetch.length <= 44 && !addressToFetch.startsWith('0x');
+    
+    if (!isEthereumAddress && !isSolanaAddress) {
+      setError('Invalid wallet address format. Must be either an Ethereum (0x...) or Solana address');
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const apiData = await fetchCounterparties(addressToFetch, timeframe);
+      
+      // Check if the API returned an error message
+      if (apiData.error) {
+        throw new Error(apiData.error);
+      }
+      
+      // Transform API data to match CSV format
+      const counterpartiesArray = Array.isArray(apiData) ? apiData : (apiData.counterparties || []);
+      
+      // Check if we got any data
+      if (!counterpartiesArray.length) {
+        setError('No counterparty data found for this address');
+        return;
+      }
+      
+      const transformedData = {
+        mainAddress: addressToFetch,
+        transactions: counterpartiesArray.map((cp) => ({
+          interactingAddress: cp.interactingAddress || cp.address || cp.wallet_address || cp.counterparty_address,
+          volIn: cp.volIn || cp.volumeIn || cp.volume_in || cp.inflow || '0',
+          volOut: cp.volOut || cp.volumeOut || cp.volume_out || cp.outflow || '0',
+          usdNetflow: cp.usdNetflow || cp.netFlow || cp.net_flow || cp.usd_netflow || '0',
+          label: cp.interactingLabel || cp.name || cp.symbol || cp.label || '',
+          interactingLabel: cp.interactingLabel || cp.name || cp.symbol || cp.label || '',
+          chain: cp.chain || (addressToFetch.startsWith('0x') ? 'ethereum' : 'solana'),
+        }))
+      };
+
+      setData(prevData => [...prevData, transformedData]);
+      
+      // Only clear the input field if we're using the input field value
+      if (!address) {
+        setWalletAddress('');
+      }
+    } catch (err) {
+      console.error('Error fetching data:', err);
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleTimeframeChange = async (newTimeframe) => {
+    if (newTimeframe === timeframe || isReloading) return;
+    
+    setTimeframe(newTimeframe);
+    
+    // Get all main addresses from current data
+    const mainAddresses = data.map(d => d.mainAddress);
+    
+    if (mainAddresses.length === 0) return;
+    
+    setIsReloading(true);
+    setReloadProgress({ current: 0, total: mainAddresses.length });
+    
+    try {
+      const newData = [];
+      
+      for (let i = 0; i < mainAddresses.length; i++) {
+        const address = mainAddresses[i];
+        setReloadProgress({ current: i + 1, total: mainAddresses.length });
+        
+        try {
+          const apiData = await fetchCounterparties(address, newTimeframe);
+          
+          const counterpartiesArray = Array.isArray(apiData) ? apiData : (apiData.counterparties || []);
+          
+          const transformedData = {
+            mainAddress: address,
+            transactions: counterpartiesArray.map(cp => ({
+              interactingAddress: cp.interactingAddress || cp.address || cp.wallet_address || cp.counterparty_address,
+              volIn: cp.volIn || cp.volumeIn || cp.volume_in || cp.inflow || '0',
+              volOut: cp.volOut || cp.volumeOut || cp.volume_out || cp.outflow || '0',
+              usdNetflow: cp.usdNetflow || cp.netFlow || cp.net_flow || cp.usd_netflow || '0',
+              label: cp.interactingLabel || cp.name || cp.symbol || cp.label || '',
+              interactingLabel: cp.interactingLabel || cp.name || cp.symbol || cp.label || '',
+              chain: cp.chain || 'solana',
+            }))
+          };
+          
+          newData.push(transformedData);
+        } catch (err) {
+          console.error(`Error reloading wallet ${address}:`, err);
+        }
+      }
+      
+      setData(newData);
+    } catch (err) {
+      setError(`Error changing timeframe: ${err.message}`);
+    } finally {
+      setIsReloading(false);
+    }
+  };
+
   useEffect(() => {
     if (data.length > 0 && svgRef.current) {
-      // Check maximum total volume of any counterparty
-      let maxTotalVolume = 0;
-      data.forEach(dataSet => {
-        dataSet.transactions.forEach(d => {
-          const totalVolume = Math.abs(parseFloat(d.volIn)) + Math.abs(parseFloat(d.volOut));
-          if (!d.isMain && totalVolume > maxTotalVolume) {
-            maxTotalVolume = totalVolume;
-          }
+      // Only apply automatic scaling if not in uniform mode
+      if (sizeMetric !== 'uniform') {
+        // Check maximum total volume of any counterparty
+        let maxTotalVolume = 0;
+        data.forEach(dataSet => {
+          dataSet.transactions.forEach(d => {
+            const totalVolume = Math.abs(parseFloat(d.volIn)) + Math.abs(parseFloat(d.volOut));
+            if (!d.isMain && totalVolume > maxTotalVolume) {
+              maxTotalVolume = totalVolume;
+            }
+          });
         });
-      });
 
-      // Set scale factor based on max total volume
-      let newScaleFactor;
-      if (maxTotalVolume > 30000000) {
-        newScaleFactor = 0.1;
-      } else if (maxTotalVolume > 20000000) {
-        newScaleFactor = 0.2;
-      } else if (maxTotalVolume > 10000000) {
-        newScaleFactor = 0.3;
-      } else if (maxTotalVolume > 5000000) {
-        newScaleFactor = 0.4;
-      } else if (maxTotalVolume > 1000000) {
-        newScaleFactor = 0.5;
-      } else {
-        newScaleFactor = 1; // Default scale for smaller volumes
+        // Set scale factor based on max total volume
+        let newScaleFactor;
+        if (maxTotalVolume > 30000000) {
+          newScaleFactor = 0.1;
+        } else if (maxTotalVolume > 20000000) {
+          newScaleFactor = 0.2;
+        } else if (maxTotalVolume > 10000000) {
+          newScaleFactor = 0.3;
+        } else if (maxTotalVolume > 5000000) {
+          newScaleFactor = 0.4;
+        } else if (maxTotalVolume > 1000000) {
+          newScaleFactor = 0.5;
+        } else {
+          newScaleFactor = 1; // Default scale for smaller volumes
+        }
+
+        setScaleFactor(newScaleFactor);
       }
-
-      setScaleFactor(newScaleFactor);
       createVisualization(data);
     }
   }, [data]);
 
+  // Reset scale factor to 1x when switching to uniform mode
+  useEffect(() => {
+    if (sizeMetric === 'uniform') {
+      setScaleFactor(1);
+    }
+  }, [sizeMetric]);
+
   useEffect(() => {
     if (data.length > 0 && svgRef.current) {
       createVisualization(data);
     }
-  }, [data, sizeMetric, showSmartContracts, showExchanges, rangeMin, rangeMax, highlightShared, scaleFactor, deletedNodes]);
+  }, [data, sizeMetric, showSmartContracts, showExchanges, rangeMin, rangeMax, highlightShared, scaleFactor, deletedNodes, labelMode, lockedNodes]);
 
   const calculateRadius = (d) => {
     if (d.isMain) return 30; // Increased from 20 to 26 (30% bigger)
+    
+    // Handle uniform sizing
+    if (sizeMetric === 'uniform') {
+      return 24 * scaleFactor; // Apply scale factor to uniform sizing too
+    }
     
     let value;
     if (sizeMetric === 'totalVolume') {
@@ -121,18 +262,37 @@ const App = () => {
     // Base radius calculation
     const baseRadius = Math.sqrt(value) / 10 + 5;
     
-    // Apply non-linear scaling that affects larger bubbles more
-    // For small bubbles (baseRadius < 20), scaling has minimal effect
-    // For large bubbles, scaling has more dramatic effect
-    const scaledRadius = baseRadius <= 20 
-      ? baseRadius 
-      : 20 + (baseRadius - 20) * scaleFactor;
-    
-    return scaledRadius;
+    // Apply scale factor to all bubbles consistently
+    return baseRadius * scaleFactor;
   };
 
   const isSmartContract = (label) => label && label.includes('🤖');
   const isExchange = (label) => label && label.includes('🏦');
+
+  // Function to truncate text to fit within bubble radius
+  const truncateTextForBubble = (text, radius) => {
+    // Use more aggressive sizing to get closer to the border
+    // Estimate characters that fit within the bubble diameter with smaller font
+    const maxChars = Math.floor((radius * 2.2) / 4); // Increased from 6px to 4px per char, more space
+    if (text.length <= maxChars) return text;
+    return text.slice(0, maxChars - 2) + '..';
+  };
+
+  const cleanNansenLabel = (label) => {
+    if (!label) return label;
+    
+    // Check if the entire label is just an address in brackets (like [0x123456])
+    const addressOnlyPattern = /^\s*\[([^\]]+)\]\s*$/;
+    const addressOnlyMatch = label.match(addressOnlyPattern);
+    
+    if (addressOnlyMatch) {
+      // If it's just an address in brackets, return the address without brackets
+      return addressOnlyMatch[1].trim();
+    }
+    
+    // Otherwise, remove square brackets and everything inside them
+    return label.replace(/\s*\[.*?\]\s*/g, '').trim();
+  };
 
   const formatNumber = (value) => {
     const absValue = Math.abs(value);
@@ -255,7 +415,7 @@ const App = () => {
 
     // Second pass: add counterparties and links
     allData.forEach((dataSet) => {
-      dataSet.transactions.forEach((d) => {
+      dataSet.transactions.forEach((d, index) => {
         // Skip if node was previously deleted
         if (deletedNodes.has(d.interactingAddress)) {
           return;
@@ -270,15 +430,27 @@ const App = () => {
           return;
         }
 
+        // Universal filter: Skip if Total Volume is less than $1 (regardless of bubble size setting)
+        const totalVolume = Math.abs(volIn) + Math.abs(volOut);
+        if (totalVolume < 1) {
+          return;
+        }
+
         // Skip if outside the range for the selected metric
         let metricValue;
-        if (sizeMetric === 'totalVolume') {
+        if (sizeMetric === 'uniform') {
+          // Skip range filtering for uniform sizing
+          metricValue = 0;
+        } else if (sizeMetric === 'totalVolume') {
           metricValue = volIn + volOut;
         } else {
           metricValue = parseFloat(d[sizeMetric]);
         }
-        if ((rangeMin !== '' && metricValue < parseFloat(rangeMin)) ||
-            (rangeMax !== '' && metricValue > parseFloat(rangeMax))) {
+        
+        // Only apply range filtering if not using uniform sizing
+        if (sizeMetric !== 'uniform' && 
+            ((rangeMin !== '' && metricValue < parseFloat(rangeMin)) ||
+             (rangeMax !== '' && metricValue > parseFloat(rangeMax)))) {
           return;
         }
 
@@ -318,14 +490,15 @@ const App = () => {
         });
       });
     });
-
+    
     // When creating new nodes, restore their previous positions
     nodes.forEach(node => {
       const oldPos = oldNodes.get(node.id);
       if (oldPos) {
         node.x = oldPos.x;
         node.y = oldPos.y;
-        if (node.isMain) {
+        // Restore fixed positions for main nodes and locked counterparty nodes
+        if (node.isMain || lockedNodes.has(node.id)) {
           node.fx = oldPos.fx;
           node.fy = oldPos.fy;
         }
@@ -359,18 +532,18 @@ const App = () => {
                     const el = d3.select(this);
                     const circle = el.select('circle');
                     const text = el.select('text');
-                    const radius = parseFloat(circle.attr('r'));
                     
-                    // Cache computed values
-                    const fontSize = Math.min(12 / transform.k, radius * 1.5);
+                    // Add null checks to prevent errors
+                    if (circle.empty() || text.empty()) return;
                     
-                    // Batch style updates
-                    if (!d.isMain) {
-                        const baseStrokeWidth = customHighlights.has(d.id) ? 
-                            3.4 : 
-                            Math.max(1, radius * 0.1);
-                        circle.style('stroke-width', `${baseStrokeWidth / transform.k}px`);
-                    }
+                    const radiusAttr = circle.attr('r');
+                    if (!radiusAttr) return;
+                    
+                    const radius = parseFloat(radiusAttr);
+                    
+                    // Keep text size constant regardless of zoom
+                    // Size text based on bubble radius, not zoom level
+                    const fontSize = Math.min(7.2, radius * 0.27); // Reduced by 10% from 8 and 0.3
                     text.style('font-size', `${fontSize}px`);
                 });
             });
@@ -387,15 +560,15 @@ const App = () => {
     // Add arrow marker definition
     const defs = svg.append('defs');
     defs.append('marker')
-      .attr('id', 'white-arrow')
+      .attr('id', 'arrow')
       .attr('viewBox', '0 -5 10 10')
       .attr('refX', 5)
       .attr('refY', 0)
-      .attr('markerWidth', 9)
-      .attr('markerHeight', 9)
+      .attr('markerWidth', 6)
+      .attr('markerHeight', 6)
       .attr('orient', 'auto')
       .append('path')
-      .attr('fill', 'white')
+      .attr('fill', '#FFFFFF')
       .attr('d', 'M0,-5L10,0L0,5');
 
     const link = container.append('g')
@@ -405,12 +578,20 @@ const App = () => {
       .append('path')
       .attr('class', 'link')
       .attr('stroke', d => {
-        // Check if both nodes are main nodes by looking up their current status
         const sourceNode = addressMap.get(d.source.id || d.source);
         const targetNode = addressMap.get(d.target.id || d.target);
         return (sourceNode.isMain && targetNode.isMain) ? '#FFFFFF' : (d.value > 0 ? '#34CF82' : '#FF7F7B');
       })
-      .attr('stroke-width', 1)
+      .attr('stroke-width', d => {
+        const sourceNode = addressMap.get(d.source.id || d.source);
+        const targetNode = addressMap.get(d.target.id || d.target);
+        return (sourceNode.isMain && targetNode.isMain) ? 1 : 0.25;
+      })
+      .attr('marker-end', d => {
+        const sourceNode = addressMap.get(d.source.id || d.source);
+        const targetNode = addressMap.get(d.target.id || d.target);
+        return (sourceNode.isMain && targetNode.isMain) ? 'url(#arrow)' : '';
+      })
       .attr('fill', 'none');
 
     const node = container.append('g')
@@ -446,38 +627,122 @@ const App = () => {
 
     node.append('text')
       .text(d => {
-        const addressStart = d.address.slice(0, 6);
         const customLabel = customLabels.get(d.id);
-        if (customLabel) return customLabel;
-        return `${addressStart}${d.isSmartContract ? ' 🤖' : ''}${d.isExchange ? ' 🏦' : ''}`;
-    })
-    .attr('dy', 4)
-    .attr('fill', '#FFFFFF')
-    .style('font-weight', d => customLabels.has(d.id) ? '900' : 'normal');  // Ultra bold (900) for temporary labels
-
-    node.append('title')
-      .text(d => {
-        if (d.isMain) {
-            return `Main Address: ${d.address}
-Label: ${customLabels.get(d.id) || d.address.slice(0, 6)}`;
+        let displayText;
+        
+        if (customLabel) {
+          displayText = customLabel;
+        } else if (labelMode === 'address') {
+          // Always use exactly 6 characters for address preview
+          displayText = `${d.address.slice(0, 6)}${d.isSmartContract ? ' 🤖' : ''}${d.isExchange ? ' 🏦' : ''}`;
+        } else {
+          const cleanLabel = cleanNansenLabel(d.label || d.address.slice(0, 6));
+          displayText = `${cleanLabel}${d.isSmartContract ? ' 🤖' : ''}${d.isExchange ? ' 🏦' : ''}`;
         }
         
-        const totalVolume = d.volIn + d.volOut;
-        return `Address: ${d.address}
-Label: ${d.label || 'N/A'}
-Netflow: ${formatNumber(d.usdNetflow)}
-Volume In: ${formatNumber(d.volIn)}
-Volume Out: ${formatNumber(d.volOut)}
-Total Volume: ${formatNumber(totalVolume)}${d.isSmartContract ? '\nSmart Contract' : ''}${d.isExchange ? '\nExchange' : ''}
-Connected to ${d.connectedMainAddresses.size} main address(es)`;
+        // Truncate text to fit within bubble
+        return truncateTextForBubble(displayText, calculateRadius(d));
+      })
+      .attr('dy', 4)
+      .attr('text-anchor', 'middle')
+      .attr('fill', '#FFFFFF')
+      .style('font-weight', d => customLabels.has(d.id) ? '900' : 'normal')
+      .style('font-size', d => `${Math.min(7.2, calculateRadius(d) * 0.27)}px`) // Reduced by 10% from 8 and 0.3
+      .style('pointer-events', 'none'); // Prevent text from interfering with mouse events
+
+    // Add lock symbols for manually positioned counterparty nodes
+    node.filter(d => !d.isMain && lockedNodes.has(d.id))
+      .append('text')
+      .attr('class', 'lock-symbol')
+      .text('🔒')
+      .attr('x', d => -calculateRadius(d) * 0.7) // Position at top-left corner
+      .attr('y', d => -calculateRadius(d) * 0.7)
+      .attr('fill', '#FFFFFF')
+      .style('font-size', '12px')
+      .style('cursor', 'pointer')
+      .style('pointer-events', 'all')
+      .style('filter', 'brightness(0) invert(1)') // Force white color for emoji
+      .on('click', function(event, d) {
+        event.stopPropagation(); // Prevent triggering node click
+        // Unlock the node
+        setLockedNodes(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(d.id);
+          return newSet;
+        });
+        // Allow the node to move freely again
+        d.fx = null;
+        d.fy = null;
+        // Remove the lock symbol
+        d3.select(this).remove();
+        // Restart simulation with higher energy to properly reposition the node
+        simulation.alpha(0.5).alphaTarget(0.1).restart();
+        // Reset alpha target after a delay to allow natural settling
+        setTimeout(() => {
+          simulation.alphaTarget(0);
+        }, 1000);
       });
 
+    // Create custom tooltip div
+    const tooltip = d3.select('body')
+      .select('.custom-tooltip')
+      .empty() ? 
+      d3.select('body')
+        .append('div')
+        .attr('class', 'custom-tooltip')
+        .style('position', 'absolute')
+        .style('background-color', '#061019')
+        .style('border', '1px solid #2a3f50')
+        .style('padding', '8px')
+        .style('border-radius', '4px')
+        .style('color', 'white')
+        .style('font-size', '12px')
+        .style('pointer-events', 'none')
+        .style('z-index', 1000)
+        .style('display', 'none')
+        .style('max-width', '300px')
+        .style('line-height', '1.4') :
+      d3.select('.custom-tooltip');
+
+    // Add instant hover events
+    node
+      .on('mouseenter', function(event, d) {
+        let tooltipContent;
+        
+        if (d.isMain) {
+          const label = customLabels.get(d.id) || d.address.slice(0, 6);
+          tooltipContent = `<strong>${label}</strong><br><br>Main Address<br><br>${d.address}`;
+        } else {
+          const label = d.label || 'N/A';
+          const mainInfo = `Netflow: ${formatNumber(d.usdNetflow)}<br>Volume In: ${formatNumber(d.volIn)}<br>Volume Out: ${formatNumber(d.volOut)}<br>Total Volume: ${formatNumber(d.volIn + d.volOut)}${d.isSmartContract ? '<br>Smart Contract' : ''}${d.isExchange ? '<br>Exchange' : ''}<br>Connected to ${d.connectedMainAddresses?.size || 0} main address(es)`;
+          tooltipContent = `<strong>${label}</strong><br><br>${mainInfo}<br><br>${d.address}`;
+        }
+        
+        tooltip
+          .style('display', 'block')
+          .html(tooltipContent)
+          .style('left', `${event.pageX + 10}px`)
+          .style('top', `${event.pageY - 10}px`);
+      })
+      .on('mouseleave', function() {
+        tooltip.style('display', 'none');
+      })
+      .on('mousemove', function(event) {
+        tooltip
+          .style('left', `${event.pageX + 10}px`)
+          .style('top', `${event.pageY - 10}px`);
+      });
+
+    // Add click handler to open Nansen profiler
     node.on('click', (event, d) => {
-      window.open(`https://app.nansen.ai/profiler?address=${d.address}&chain=${d.chain || 'ethereum'}&tab=overview`, '_blank');
+      // Only open link if this wasn't a drag operation
+      if (!d.isDragging) {
+        window.open(`https://app.nansen.ai/profiler?address=${d.address}&chain=${d.chain || 'ethereum'}&tab=overview`, '_blank');
+      }
     });
 
     // Add context menu div to the visualization
-    const menu = d3.select('.visualizer')
+    const menu = d3.select('body')
       .append('div')
       .attr('class', 'context-menu')
       .style('position', 'absolute')
@@ -489,143 +754,6 @@ Connected to ${d.connectedMainAddresses.size} main address(es)`;
       .style('color', 'white')
       .style('z-index', 1000);
 
-    // Add menu items
-    const menuItems = menu.selectAll('div')
-      .data([
-        { label: 'Add temporary label', action: 'label' },
-        { label: 'Highlight', action: 'highlight' },
-        { label: 'Delete bubble', action: 'delete' }
-      ])
-      .enter()
-      .append('div')
-      .style('padding', '5px 10px')
-      .style('cursor', 'pointer')
-      .style('hover', 'background-color: #2a3f50')
-      .text(d => d.label)
-      .on('click', function(event, d) {
-        event.preventDefault();
-        event.stopPropagation();
-        
-        const selectedNode = menu.node().__data__;
-        const nodeElement = d3.select(menu.node().__element__);
-        
-        switch(d.action) {
-          case 'label':
-            const label = prompt('Enter label:');
-            if (label) {
-              setCustomLabels(prev => new Map(prev).set(selectedNode.id, label));
-              nodeElement.select('text').text(label);
-            }
-            menu.style('display', 'none');
-            break;
-            
-          case 'highlight':
-            const colors = ['red', '#00FF00', 'yellow', '#8A2BE2', 'orange', 'white', '#87CEEB'];
-            const colorMenu = d3.select('body')
-              .append('div')
-              .attr('class', 'color-menu')
-              .style('position', 'absolute')
-              .style('left', `${event.pageX}px`)
-              .style('top', `${event.pageY}px`)
-              .style('background-color', '#061019')
-              .style('border', '1px solid #2a3f50')
-              .style('padding', '5px')
-              .style('border-radius', '4px')
-              .style('z-index', 1000);
-
-            // Add remove highlight option
-            colorMenu.append('div')
-              .style('padding', '5px 10px')
-              .style('cursor', 'pointer')
-              .style('background-color', 'black')
-              .style('margin', '2px')
-              .style('position', 'relative')
-              .style('height', '20px')
-              .on('click', function() {
-                setCustomHighlights(prev => {
-                  const newHighlights = new Map(prev);
-                  newHighlights.delete(selectedNode.id);
-                  return newHighlights;
-                });
-                // Update node stroke to show shared highlight if applicable
-                nodeElement.select('circle')
-                  .attr('stroke', (!selectedNode.isMain && highlightShared && selectedNode.connectedMainAddresses.size > 1) ? '#008EFF' : 'none')
-                  .attr('stroke-width', 2.6);
-                colorMenu.remove();
-                menu.style('display', 'none');
-              })
-              .append('div')
-              .style('position', 'absolute')
-              .style('top', '0')
-              .style('left', '0')
-              .style('right', '0')
-              .style('bottom', '0')
-              .style('background', 'linear-gradient(to right top, transparent calc(50% - 1px), red, transparent calc(50% + 1px))');
-
-            colorMenu.selectAll('.color-option')
-              .data(colors)
-              .enter()
-              .append('div')
-              .style('padding', '5px 10px')
-              .style('cursor', 'pointer')
-              .style('background-color', d => d)
-              .style('margin', '2px')
-              .style('color', d => ['white', '#87CEEB'].includes(d) ? 'black' : 'white')
-              .on('click', function(event, color) {
-                setCustomHighlights(prev => new Map(prev).set(selectedNode.id, color));
-                nodeElement.select('circle')
-                  .attr('stroke', color)
-                  .attr('stroke-width', 3.4); // 30% thicker
-                colorMenu.remove();
-                menu.style('display', 'none');
-              });
-
-            menu.style('display', 'none');
-            break;
-            
-          case 'delete':
-            const nodeId = selectedNode.id;
-            menu.style('display', 'none');
-            
-            if (selectedNode.isMain) {
-                // Remove the main node's data from the data array
-                setData(prevData => prevData.filter(d => d.mainAddress !== nodeId));
-                
-                // Don't add main nodes to deletedNodes since we're removing their data completely
-                // Just trigger visualization update - the createVisualization function will
-                // rebuild everything based on the remaining data
-                createVisualization(data.filter(d => d.mainAddress !== nodeId));
-            } else {
-                // Original code for deleting counterparty nodes
-                setDeletedNodes(prev => new Set(prev).add(nodeId));
-                
-                const newLinks = links.filter(l => l.source.id !== nodeId && l.target.id !== nodeId);
-                const newNodes = nodes.filter(n => n.id !== nodeId);
-                
-                nodeElement.remove();
-                link.filter(l => l.source.id === nodeId || l.target.id === nodeId).remove();
-                
-                simulation
-                    .nodes(newNodes)
-                    .force('link', d3.forceLink(newLinks).id(d => d.id).distance(100));
-                
-                links = newLinks;
-                nodes = newNodes;
-            }
-            
-            simulation.alpha(1).restart();
-            break;
-        }
-      });
-
-    // Add click handler to hide context menu when clicking outside
-    svg.on('click', () => {
-        // Hide context menu
-        d3.selectAll('.context-menu').style('display', 'none');
-        // Also hide any color menus
-        d3.selectAll('.color-menu').remove();
-    });
-
     // Modify the node contextmenu handler to stop event propagation
     node.on('contextmenu', function(event, d) {
         event.preventDefault();
@@ -634,14 +762,175 @@ Connected to ${d.connectedMainAddresses.size} main address(es)`;
         // Hide any existing color menus
         d3.selectAll('.color-menu').remove();
 
-        menu
-            .style('display', 'block')
-            .style('left', `${event.pageX}px`)
-            .style('top', `${event.pageY}px`);
+        // Clear previous menu items
+        menu.selectAll('div').remove();
+        
+        // Create menu items based on node type
+        const menuOptions = [
+          { label: 'Add temporary label', action: 'label' },
+          { label: 'Highlight', action: 'highlight' },
+          ...(d.isMain ? [] : [{ label: 'Add Wallet', action: 'addWallet' }]),
+          { label: 'Delete bubble', action: 'delete' }
+        ];
 
-        // Store the selected node and its DOM element
-        menu.node().__data__ = d;
-        menu.node().__element__ = this;
+        menu.selectAll('div')
+          .data(menuOptions)
+          .enter()
+          .append('div')
+          .style('padding', '5px 10px')
+          .style('cursor', 'pointer')
+          .style('hover', 'background-color: #2a3f50')
+          .text(option => option.label)
+          .on('click', function(event, menuItem) {
+            event.preventDefault();
+            event.stopPropagation();
+            
+            const selectedNode = d; // Use the node data from the outer scope
+            const nodeElement = d3.select(event.target.closest('.bubble'));
+            
+            switch(menuItem.action) {
+              case 'label':
+                const label = prompt('Enter label:');
+                if (label) {
+                  setCustomLabels(prev => new Map(prev).set(selectedNode.id, label));
+                  nodeElement.select('text').text(label);
+                }
+                menu.style('display', 'none');
+                break;
+              
+              case 'highlight':
+                const colors = ['red', '#00FF00', 'yellow', '#8A2BE2', 'orange', 'white', '#87CEEB'];
+                const colorMenu = d3.select('body')
+                  .append('div')
+                  .attr('class', 'color-menu')
+                  .style('position', 'absolute')
+                  .style('left', `${event.pageX}px`)
+                  .style('top', `${event.pageY}px`)
+                  .style('background-color', '#061019')
+                  .style('border', '1px solid #2a3f50')
+                  .style('padding', '5px')
+                  .style('border-radius', '4px')
+                  .style('z-index', 1000);
+
+                // Add remove highlight option
+                colorMenu.append('div')
+                  .style('padding', '5px 10px')
+                  .style('cursor', 'pointer')
+                  .style('background-color', 'black')
+                  .style('margin', '2px')
+                  .style('position', 'relative')
+                  .style('height', '20px')
+                  .on('click', function() {
+                    setCustomHighlights(prev => {
+                      const newHighlights = new Map(prev);
+                      newHighlights.delete(selectedNode.id);
+                      return newHighlights;
+                    });
+                    // Update node stroke to show shared highlight if applicable
+                    nodeElement.select('circle')
+                      .attr('stroke', (!selectedNode.isMain && highlightShared && selectedNode.connectedMainAddresses.size > 1) ? '#008EFF' : 'none')
+                      .attr('stroke-width', 2.6);
+                    colorMenu.remove();
+                    menu.style('display', 'none');
+                  })
+                  .append('div')
+                  .style('position', 'absolute')
+                  .style('top', '0')
+                  .style('left', '0')
+                  .style('right', '0')
+                  .style('bottom', '0')
+                  .style('background', 'linear-gradient(to right top, transparent calc(50% - 1px), red, transparent calc(50% + 1px))');
+
+                colorMenu.selectAll('.color-option')
+                  .data(colors)
+                  .enter()
+                  .append('div')
+                  .style('padding', '5px 10px')
+                  .style('cursor', 'pointer')
+                  .style('background-color', d => d)
+                  .style('margin', '2px')
+                  .style('color', d => ['white', '#87CEEB'].includes(d) ? 'black' : 'white')
+                  .on('click', function(event, color) {
+                    setCustomHighlights(prev => new Map(prev).set(selectedNode.id, color));
+                    nodeElement.select('circle')
+                      .attr('stroke', color)
+                      .attr('stroke-width', 3.4); // 30% thicker
+                    colorMenu.remove();
+                    menu.style('display', 'none');
+                  });
+
+                menu.style('display', 'none');
+                break;
+              
+              case 'addWallet':
+                menu.style('display', 'none');
+                // Add the counterparty as a main wallet and fetch immediately
+                (async () => {
+                  try {
+                    console.log('Selected node:', selectedNode);
+                    const address = selectedNode.address || selectedNode.id;
+                    console.log('Using address:', address);
+                    await handleApiDataFetch(address);
+                  } catch (err) {
+                    console.error('Failed to add wallet:', err);
+                    setError(`Failed to add wallet: ${err.message}`);
+                  }
+                })();
+                break;
+                
+              case 'delete':
+                const nodeId = selectedNode.id;
+                menu.style('display', 'none');
+                
+                if (selectedNode.isMain) {
+                    // Remove the main node's data from the data array
+                    setData(prevData => prevData.filter(d => d.mainAddress !== nodeId));
+                    
+                    // Don't add main nodes to deletedNodes since we're removing their data completely
+                    // Just trigger visualization update - the createVisualization function will
+                    // rebuild everything based on the remaining data
+                    createVisualization(data.filter(d => d.mainAddress !== nodeId));
+                } else {
+                    // Save the node data for restoration
+                    setDeletedNodesData(prev => new Map(prev).set(nodeId, {
+                      ...selectedNode,
+                      deletedAt: new Date().toISOString()
+                    }));
+                    
+                    // Original code for deleting counterparty nodes
+                    setDeletedNodes(prev => new Set(prev).add(nodeId));
+                    
+                    const newLinks = links.filter(l => l.source.id !== nodeId && l.target.id !== nodeId);
+                    const newNodes = nodes.filter(n => n.id !== nodeId);
+                    
+                    nodeElement.remove();
+                    link.filter(l => l.source.id === nodeId || l.target.id === nodeId).remove();
+                    
+                    simulation
+                        .nodes(newNodes)
+                        .force('link', d3.forceLink(newLinks).id(d => d.id).distance(100));
+                    
+                    links = newLinks;
+                    nodes = newNodes;
+                }
+                
+                simulation.alpha(1).restart();
+                break;
+            }
+          });
+
+    menu
+        .style('display', 'block')
+        .style('left', `${event.pageX}px`)
+        .style('top', `${event.pageY}px`);
+
+    // Add click handler to hide context menu when clicking outside
+    svg.on('click', () => {
+        // Hide context menu
+        d3.selectAll('.context-menu').style('display', 'none');
+        // Also hide any color menus
+        d3.selectAll('.color-menu').remove();
+    });
     });
 
     simulation
@@ -664,23 +953,34 @@ Connected to ${d.connectedMainAddresses.size} main address(es)`;
         const targetNode = addressMap.get(d.target.id || d.target);
         
         if (sourceNode.isMain && targetNode.isMain) {
-          // Get the netflow value from the source node's transactions
-          const sourceTransactions = data.find(set => set.mainAddress === sourceNode.id)?.transactions || [];
-          const transaction = sourceTransactions.find(t => t.interactingAddress === targetNode.id);
-          const netflow = transaction ? parseFloat(transaction.usdNetflow) : 0;
+          const dx = d.target.x - d.source.x;
+          const dy = d.target.y - d.source.y;
+          const dr = Math.sqrt(dx * dx + dy * dy);
           
-          // FLIPPED LOGIC:
-          // If netflow is positive, money is flowing TO source, arrow points FROM target TO source
-          // If netflow is negative, money is flowing FROM source, arrow points FROM source TO target
-          const isNetFlowLink = netflow < 0;  // Flipped from > to <
+          // Calculate node radii
+          const sourceRadius = calculateRadius(sourceNode);
+          const targetRadius = calculateRadius(targetNode);
           
-          const midX = (d.source.x + d.target.x) / 2;
-          const midY = (d.source.y + d.target.y) / 2;
+          // Calculate start and end points at node borders
+          const startX = d.source.x + (sourceRadius * dx / dr);
+          const startY = d.source.y + (sourceRadius * dy / dr);
+          const endX = d.target.x - (targetRadius * dx / dr);
+          const endY = d.target.y - (targetRadius * dy / dr);
           
-          d3.select(this)
-            .attr('marker-mid', isNetFlowLink ? 'url(#white-arrow)' : '');
+          // Calculate the points for the curved path
+          const midX = (startX + endX) / 2;
+          const midY = (startY + endY) / 2;
+          const curvature = 0.3;
+          const controlX = midX + (dy * curvature);
+          const controlY = midY - (dx * curvature);
           
-          return `M${d.source.x},${d.source.y} L${midX},${midY} L${d.target.x},${d.target.y}`;
+          // Calculate the point slightly before the target for the arrow
+          const t = 0.95; // Place arrow 95% along the path
+          const qt = 1 - t;
+          const arrowEndX = qt * qt * startX + 2 * qt * t * controlX + t * t * endX;
+          const arrowEndY = qt * qt * startY + 2 * qt * t * controlY + t * t * endY;
+          
+          return `M${startX},${startY} Q${controlX},${controlY} ${arrowEndX},${arrowEndY}`;
         } else {
           return `M${d.source.x},${d.source.y} L${d.target.x},${d.target.y}`;
         }
@@ -697,24 +997,42 @@ Connected to ${d.connectedMainAddresses.size} main address(es)`;
       if (!event.active) simulation.alphaTarget(0.3).restart();
       d.fx = d.x;
       d.fy = d.y;
+      
+      // Track that dragging started
+      d.isDragging = false; // Will be set to true if actually moved
+      d.dragStartX = event.x;
+      d.dragStartY = event.y;
     }
 
     function dragged(event, d) {
       d.fx = event.x;
       d.fy = event.y;
+      
+      // Check if we've moved enough to consider this a drag
+      const dx = event.x - d.dragStartX;
+      const dy = event.y - d.dragStartY;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      
+      if (distance > 5) { // 5px threshold for drag vs click
+        d.isDragging = true;
+      }
     }
 
     function dragended(event, d) {
       if (!event.active) simulation.alphaTarget(0);
-      if (d.isMain) {
-        // Keep main addresses fixed at their new position
-        d.fx = d.x;
-        d.fy = d.y;
-      } else {
-        // Allow counterparty bubbles to float freely again
-        d.fx = null;
-        d.fy = null;
+      // Make both main nodes and counterparty nodes stick where they're dropped
+      d.fx = d.x;
+      d.fy = d.y;
+      
+      // Mark counterparty nodes as locked when manually positioned (only if actually dragged)
+      if (!d.isMain && d.isDragging) {
+        setLockedNodes(prev => new Set(prev).add(d.id));
       }
+      
+      // Reset dragging flag after a short delay to allow click event to check it
+      setTimeout(() => {
+        d.isDragging = false;
+      }, 100);
     }
 
     // Apply stored highlights after node creation
@@ -761,225 +1079,371 @@ Connected to ${d.connectedMainAddresses.size} main address(es)`;
     // Add this force to the simulation
     simulation.force('arrowRepulsion', arrowRepulsionForce);
 
-    // Modify the link path to use a curved path
+    // Modify the link path to use a curved path and add arrows
     link.attr('d', function(d) {
         const sourceNode = addressMap.get(d.source.id || d.source);
         const targetNode = addressMap.get(d.target.id || d.target);
 
         if (sourceNode.isMain && targetNode.isMain) {
-            const midX = (d.source.x + d.target.x) / 2;
-            const midY = (d.source.y + d.target.y) / 2;
-            const controlX = midX + (d.target.y - d.source.y) * 0.6; // Further increased curvature
-            const controlY = midY - (d.target.x - d.source.x) * 0.6;
-            return `M${d.source.x},${d.source.y} Q${controlX},${controlY} ${d.target.x},${d.target.y}`;
+            // Get the netflow value for arrow direction
+            const sourceTransactions = data.find(set => set.mainAddress === sourceNode.id)?.transactions || [];
+            const transaction = sourceTransactions.find(t => t.interactingAddress === targetNode.id);
+            const netflow = transaction ? parseFloat(transaction.usdNetflow) : 0;
+            
+            // Add arrow marker based on netflow direction
+            const isNetFlowLink = netflow < 0;  // Flipped logic
+            d3.select(this).attr('marker-mid', isNetFlowLink ? 'url(#white-arrow)' : '');
+            
+            // Calculate node radii and border points
+            const dx = d.target.x - d.source.x;
+            const dy = d.target.y - d.source.y;
+            const dr = Math.sqrt(dx * dx + dy * dy);
+            const sourceRadius = calculateRadius(sourceNode);
+            const targetRadius = calculateRadius(targetNode);
+            
+            const startX = d.source.x + (sourceRadius * dx / dr);
+            const startY = d.source.y + (sourceRadius * dy / dr);
+            const endX = d.target.x - (targetRadius * dx / dr);
+            const endY = d.target.y - (targetRadius * dy / dr);
+            
+            const midX = (startX + endX) / 2;
+            const midY = (startY + endY) / 2;
+            const controlX = midX + (dy * 0.6); // Further increased curvature
+            const controlY = midY - (dx * 0.6);
+            return `M${startX},${startY} Q${controlX},${controlY} ${endX},${endY}`;
         } else {
             return `M${d.source.x},${d.source.y} L${d.target.x},${d.target.y}`;
         }
     });
   };
 
+  // Add restore function for deleted nodes
+  const restoreNode = (nodeId) => {
+    setDeletedNodes(prev => {
+      const newSet = new Set(prev);
+      newSet.delete(nodeId);
+      return newSet;
+    });
+    
+    setDeletedNodesData(prev => {
+      const newMap = new Map(prev);
+      newMap.delete(nodeId);
+      return newMap;
+    });
+  };
+
   return (
     <div className="App">
-      <div style={{ 
-        position: 'fixed', 
-        top: 0, 
-        left: 0, 
-        right: 0,
-        backgroundColor: '#061019', 
-        padding: '10px',
-        zIndex: 1000,
-        borderBottom: '1px solid #2a3f50',
-        color: 'white',
-        minHeight: '150px',
-        display: 'block'
-      }}>
-        <input type="file" onChange={handleFileUpload} accept=".csv" />
-        <div>
-          <label>
-            <input
-              type="radio"
-              value="usdNetflow"
-              checked={sizeMetric === 'usdNetflow'}
-              onChange={(e) => {
-                d3.selectAll('.color-menu').remove();
-                setSizeMetric(e.target.value);
-              }}
-            /> USD Netflow
-          </label>
-          <label>
-            <input
-              type="radio"
-              value="volIn"
-              checked={sizeMetric === 'volIn'}
-              onChange={(e) => {
-                d3.selectAll('.color-menu').remove();
-                setSizeMetric(e.target.value);
-              }}
-            /> Volume In
-          </label>
-          <label>
-            <input
-              type="radio"
-              value="volOut"
-              checked={sizeMetric === 'volOut'}
-              onChange={(e) => {
-                d3.selectAll('.color-menu').remove();
-                setSizeMetric(e.target.value);
-              }}
-            /> Volume Out
-          </label>
-          <label>
-            <input
-              type="radio"
-              value="totalVolume"
-              checked={sizeMetric === 'totalVolume'}
-              onChange={(e) => {
-                d3.selectAll('.color-menu').remove();
-                setSizeMetric(e.target.value);
-              }}
-            /> Total Volume
-          </label>
+      <div className="controls" style={{ position: 'fixed', top: 0, left: 0, padding: '10px', zIndex: 1000, background: '#061019', color: 'white' }}>
+        {/* Add new API input section */}
+        <div style={{ marginBottom: '10px' }}>
+          <input
+            type="text"
+            value={walletAddress}
+            onChange={(e) => setWalletAddress(e.target.value)}
+            placeholder="Enter wallet address"
+            style={{
+              padding: '5px',
+              marginRight: '10px',
+              background: '#2a3f50',
+              color: 'white',
+              border: '1px solid #34CF82',
+              borderRadius: '4px'
+            }}
+          />
+          <button
+            onClick={() => handleApiDataFetch()}
+            disabled={loading}
+            style={{
+              padding: '5px 10px',
+              background: '#34CF82',
+              color: '#061019',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: loading ? 'not-allowed' : 'pointer'
+            }}
+          >
+            {loading ? 'Loading...' : 'Add Wallet'}
+          </button>
         </div>
-        <div>
-          <label>
+        {error && (
+          <div style={{ color: '#FF7F7B', marginBottom: '10px' }}>
+            {error}
+          </div>
+        )}
+        
+        {/* Existing file upload control */}
+        <div style={{ marginBottom: '10px' }}>
+          <input
+            type="file"
+            onChange={handleFileUpload}
+            accept=".csv"
+            style={{ color: 'white' }}
+          />
+        </div>
+        
+        {/* Timeframe Selector */}
+        <div style={{ marginBottom: '10px' }}>
+          <label style={{ marginRight: '10px' }}>Timeframe:</label>
+          <select
+            value={timeframe}
+            onChange={(e) => handleTimeframeChange(e.target.value)}
+            disabled={isReloading}
+            style={{
+              padding: '5px',
+              background: '#2a3f50',
+              color: 'white',
+              border: '1px solid #34CF82',
+              borderRadius: '4px'
+            }}
+          >
+            <option value="30D">30 Days</option>
+            <option value="90D">90 Days</option>
+            <option value="1Y">1 Year</option>
+            <option value="5Y">5 Years</option>
+          </select>
+          
+          {/* Loading indicator */}
+          {isReloading && (
+            <div style={{ marginTop: '10px', textAlign: 'center' }}>
+              <div style={{ color: '#34CF82', marginBottom: '5px' }}>
+                Reloading wallets: {reloadProgress.current}/{reloadProgress.total}
+              </div>
+              <div 
+                style={{
+                  width: '20px',
+                  height: '20px',
+                  border: '2px solid #2a3f50',
+                  borderTop: '2px solid #34CF82',
+                  borderRadius: '50%',
+                  animation: 'spin 1s linear infinite',
+                  margin: '0 auto'
+                }}
+              />
+              <style>{`
+                @keyframes spin {
+                  0% { transform: rotate(0deg); }
+                  100% { transform: rotate(360deg); }
+                }
+              `}</style>
+            </div>
+          )}
+        </div>
+        
+        {/* Size Metric Control */}
+        <div style={{ marginBottom: '10px' }}>
+          <label style={{ marginRight: '10px' }}>Bubble Size:</label>
+          <select
+            value={sizeMetric}
+            onChange={(e) => setSizeMetric(e.target.value)}
+            style={{
+              padding: '5px',
+              background: '#2a3f50',
+              color: 'white',
+              border: '1px solid #34CF82',
+              borderRadius: '4px'
+            }}
+          >
+            <option value="totalVolume">Total Volume</option>
+            <option value="usdNetflow">USD Netflow</option>
+            <option value="volIn">Volume In</option>
+            <option value="volOut">Volume Out</option>
+            <option value="uniform">Uniform</option>
+          </select>
+        </div>
+
+        {/* Label Mode Control */}
+        <div style={{ marginBottom: '10px' }}>
+          <label style={{ marginRight: '10px' }}>Bubble Label:</label>
+          <select
+            value={labelMode}
+            onChange={(e) => setLabelMode(e.target.value)}
+            style={{
+              padding: '5px',
+              background: '#2a3f50',
+              color: 'white',
+              border: '1px solid #34CF82',
+              borderRadius: '4px'
+            }}
+          >
+            <option value="label">Nansen Labels</option>
+            <option value="address">Addresses</option>
+          </select>
+        </div>
+
+        {/* Filter Controls */}
+        <div style={{ marginBottom: '10px' }}>
+          <label style={{ display: 'flex', alignItems: 'center', marginBottom: '5px' }}>
             <input
               type="checkbox"
               checked={showSmartContracts}
-              onChange={(e) => {
-                d3.selectAll('.color-menu').remove();
-                setShowSmartContracts(e.target.checked);
-              }}
-            /> Show Smart Contracts
+              onChange={(e) => setShowSmartContracts(e.target.checked)}
+              style={{ marginRight: '8px' }}
+            />
+            Show Smart Contracts 🤖
           </label>
-          <label>
+          <label style={{ display: 'flex', alignItems: 'center', marginBottom: '5px' }}>
             <input
               type="checkbox"
               checked={showExchanges}
-              onChange={(e) => {
-                d3.selectAll('.color-menu').remove();
-                setShowExchanges(e.target.checked);
-              }}
-            /> Show Exchanges
+              onChange={(e) => setShowExchanges(e.target.checked)}
+              style={{ marginRight: '8px' }}
+            />
+            Show Exchanges 🏦
           </label>
-          <label>
+          <label style={{ display: 'flex', alignItems: 'center', marginBottom: '5px' }}>
             <input
               type="checkbox"
               checked={highlightShared}
-              onChange={(e) => {
-                d3.selectAll('.color-menu').remove();
-                setHighlightShared(e.target.checked);
-              }}
-            /> Highlight Shared Counterparties
+              onChange={(e) => setHighlightShared(e.target.checked)}
+              style={{ marginRight: '8px' }}
+            />
+            Highlight Shared Counterparties
           </label>
         </div>
-        <div>
-          <label>Min {sizeMetric}:</label>
-          <input
-            type="text"
-            value={rangeMin}
-            onChange={(e) => {
-              d3.selectAll('.color-menu').remove();
-              setRangeMin(e.target.value);
-            }}
-          />
-          <label>Max {sizeMetric}:</label>
-          <input
-            type="text"
-            value={rangeMax}
-            onChange={(e) => {
-              d3.selectAll('.color-menu').remove();
-              setRangeMax(e.target.value);
-            }}
-          />
+
+        {/* Range Controls */}
+        <div style={{ marginBottom: '10px' }}>
+          <div style={{ marginBottom: '5px' }}>
+            <label style={{ marginRight: '10px' }}>Min Value:</label>
+            <input
+              type="number"
+              value={rangeMin}
+              onChange={(e) => setRangeMin(e.target.value)}
+              placeholder="Min"
+              style={{
+                padding: '3px',
+                width: '80px',
+                background: '#2a3f50',
+                color: 'white',
+                border: '1px solid #34CF82',
+                borderRadius: '4px'
+              }}
+            />
+          </div>
+          <div style={{ marginBottom: '5px' }}>
+            <label style={{ marginRight: '10px' }}>Max Value:</label>
+            <input
+              type="number"
+              value={rangeMax}
+              onChange={(e) => setRangeMax(e.target.value)}
+              placeholder="Max"
+              style={{
+                padding: '3px',
+                width: '80px',
+                background: '#2a3f50',
+                color: 'white',
+                border: '1px solid #34CF82',
+                borderRadius: '4px'
+              }}
+            />
+          </div>
         </div>
-        <div>
-          <label>Bubble Size Scale:</label>
+
+        {/* Scale Factor Control */}
+        <div style={{ marginBottom: '10px' }}>
+          <label style={{ display: 'block', marginBottom: '5px' }}>
+            Scale Factor: {scaleFactor.toFixed(1)}
+          </label>
           <input
             type="range"
             min="0.1"
-            max="1"
+            max="2"
             step="0.1"
             value={scaleFactor}
-            onChange={(e) => {
-              d3.selectAll('.color-menu').remove();
-              setScaleFactor(parseFloat(e.target.value));
-            }}
+            onChange={(e) => setScaleFactor(parseFloat(e.target.value))}
+            style={{ width: '200px' }}
           />
-          {scaleFactor}x
         </div>
-      </div>
 
-      {/* Add deleted nodes list */}
-      <div className="deleted-nodes-box" style={{
-        position: 'fixed',
-        bottom: 20,
-        right: 20,
-        maxHeight: '200px',
-        width: '250px',
-        backgroundColor: '#061019',
-        border: '1px solid #2a3f50',
-        borderRadius: '4px',
-        padding: '10px',
-        overflowY: 'auto',
-        color: 'white',
-        zIndex: 1000
-      }}>
-        <div style={{ 
-          borderBottom: '1px solid #2a3f50', 
-          paddingBottom: '5px', 
-          marginBottom: '5px',
-          fontWeight: 'bold' 
-        }}>
-          Deleted Nodes ({deletedNodes.size})
-        </div>
-        {Array.from(deletedNodes).map(address => (
-          <div key={address} style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            padding: '5px 0',
-            borderBottom: '1px solid #2a3f50',
-            fontSize: '0.9em'
-          }}>
-            <span>0x{address.slice(2, 6)}...</span>
-            <button
-              onClick={() => {
-                // Remove from deleted nodes
-                setDeletedNodes(prev => {
-                  const newSet = new Set(prev);
-                  newSet.delete(address);
-                  return newSet;
-                });
-                // Hide context menu
-                d3.selectAll('.context-menu').style('display', 'none');
-                // Trigger complete visualization update with all data
-                createVisualization(data);
-              }}
-              style={{
-                backgroundColor: '#2a3f50',
-                border: 'none',
-                color: 'white',
-                padding: '3px 8px',
-                borderRadius: '3px',
-                cursor: 'pointer'
-              }}
-            >
-              Restore
-            </button>
-          </div>
-        ))}
-        {deletedNodes.size === 0 && (
-          <div style={{ color: '#666', fontStyle: 'italic', textAlign: 'center' }}>
-            No deleted nodes
+        {/* Data Info */}
+        {data.length > 0 && (
+          <div style={{ fontSize: '12px', opacity: 0.8 }}>
+            Loaded datasets: {data.length}<br/>
+            Total addresses: {data.reduce((sum, d) => sum + d.transactions.length + 1, 0)}
           </div>
         )}
+        
+        {/* ... rest of the existing controls ... */}
       </div>
-
-      <div className="visualizer" style={{ marginTop: '200px' }}>
-        <svg ref={svgRef}></svg>
-      </div>
+      <svg ref={svgRef}></svg>
+      
+      {/* Deleted Nodes Widget */}
+      {deletedNodesData.size > 0 && (
+        <div style={{
+          position: 'fixed',
+          bottom: '20px',
+          right: '20px',
+          background: '#061019',
+          border: '1px solid #2a3f50',
+          borderRadius: '8px',
+          padding: '10px',
+          maxWidth: '250px',
+          maxHeight: '300px',
+          overflowY: 'auto',
+          zIndex: 1000,
+          color: 'white'
+        }}>
+          <h4 style={{ margin: '0 0 10px 0', color: '#34CF82' }}>
+            Deleted Nodes ({deletedNodesData.size})
+          </h4>
+          {Array.from(deletedNodesData.entries()).map(([nodeId, nodeData]) => (
+            <div key={nodeId} style={{
+              marginBottom: '8px',
+              padding: '8px',
+              background: '#2a3f50',
+              borderRadius: '4px',
+              fontSize: '12px'
+            }}>
+              <div style={{ fontWeight: 'bold', marginBottom: '4px' }}>
+                {nodeData.label || nodeId.slice(0, 8) + '...'}
+              </div>
+              <div style={{ opacity: 0.8, marginBottom: '6px' }}>
+                {nodeData.address.slice(0, 8) + '...'}
+              </div>
+              <div style={{ display: 'flex', gap: '5px' }}>
+                <button
+                  onClick={() => restoreNode(nodeId)}
+                  style={{
+                    background: '#34CF82',
+                    color: '#061019',
+                    border: 'none',
+                    borderRadius: '3px',
+                    padding: '4px 8px',
+                    fontSize: '10px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Restore
+                </button>
+                <button
+                  onClick={() => {
+                    setDeletedNodesData(prev => {
+                      const newMap = new Map(prev);
+                      newMap.delete(nodeId);
+                      return newMap;
+                    });
+                  }}
+                  style={{
+                    background: '#FF7F7B',
+                    color: '#061019',
+                    border: 'none',
+                    borderRadius: '3px',
+                    padding: '4px 8px',
+                    fontSize: '10px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  Remove
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 };
 
 export default App;
+
