@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import * as d3 from 'd3';
 import Papa from 'papaparse';
-import { fetchCounterparties } from './services/nansenApi';
+import { fetchCounterparties, fetchTransactionsBetweenAddresses } from './services/nansenApi';
 
 const App = () => {
   const [data, setData] = useState([]);
@@ -28,6 +28,10 @@ const App = () => {
   const [isReloading, setIsReloading] = useState(false);
   const [reloadProgress, setReloadProgress] = useState({ current: 0, total: 0 });
   const [lockedNodes, setLockedNodes] = useState(new Set()); // Track manually positioned nodes
+  
+  // New state for transaction details
+  const [expandedLinks, setExpandedLinks] = useState(new Map()); // Track which links are expanded with their transactions
+  const [loadingTransactions, setLoadingTransactions] = useState(new Set()); // Track which links are loading
 
   // Add these color constants near the top of the file, after the useState declarations
   const GREEN_FILL = '#061019';//'#34CF82';
@@ -242,7 +246,7 @@ const App = () => {
     if (data.length > 0 && svgRef.current) {
       createVisualization(data);
     }
-  }, [data, sizeMetric, showSmartContracts, showExchanges, rangeMin, rangeMax, highlightShared, scaleFactor, deletedNodes, labelMode, lockedNodes]);
+  }, [data, sizeMetric, showSmartContracts, showExchanges, rangeMin, rangeMax, highlightShared, scaleFactor, deletedNodes, labelMode, lockedNodes, expandedLinks]);
 
   const calculateRadius = (d) => {
     if (d.isMain) return 30; // Increased from 20 to 26 (30% bigger)
@@ -324,19 +328,35 @@ const App = () => {
   };
 
   const createVisualization = (allData) => {
-    // Modify simulation with stronger forces and custom collision handling
+    // Modify simulation for gentler, pendulum-like motion
     const simulation = d3.forceSimulation()
-        .force('link', d3.forceLink().id(d => d.id).distance(100))
+        .force('link', d3.forceLink().id(d => d.id)
+            .distance(d => {
+              const sourceNode = allData.flatMap(ds => [
+                { ...ds, id: ds.mainAddress, isMain: true },
+                ...ds.transactions.map(t => ({ ...t, id: t.interactingAddress, isMain: false }))
+              ]).find(n => n.id === d.source) || {};
+              const targetNode = allData.flatMap(ds => [
+                { ...ds, id: ds.mainAddress, isMain: true },
+                ...ds.transactions.map(t => ({ ...t, id: t.interactingAddress, isMain: false }))
+              ]).find(n => n.id === d.target) || {};
+              
+              // Longer pendulum distances for main-to-counterparty connections
+              if ((sourceNode.isMain && !targetNode.isMain) || (!sourceNode.isMain && targetNode.isMain)) {
+                return 180; // Increased from 100 for longer pendulum effect
+              }
+              return 120; // Slightly longer for main-to-main connections
+            })
+            .strength(0.8)) // Increased from 0.3 to 0.8 for stronger connections
         .force('charge', d3.forceManyBody()
-            .strength(d => d.isMain ? -1200 : -400)) // Increased repulsion for main nodes
-        .force('center', d3.forceCenter(window.innerWidth / 2, window.innerHeight / 2))
+            .strength(d => d.isMain ? -600 : -150)) // Significantly reduced from -1200/-400 for gentler repulsion
         .force('collision', d3.forceCollide().radius(d => {
             const baseRadius = calculateRadius(d);
-            // Add much more padding around main nodes
-            return d.isMain ? baseRadius * 3 : baseRadius + 2;
-        }).strength(0.95)) // Increased collision strength
+            // Increased collision padding around main nodes for bigger buffer
+            return d.isMain ? baseRadius * 4 : baseRadius + 1; // Increased from 2 to 4
+        }).strength(0.7)) // Increased from 0.5 for stronger collision avoidance
         .force('mainNodeRepulsion', d => {
-            // Custom force to push non-main nodes away from main nodes
+            // Stronger force to maintain bigger buffer around main nodes
             return function(alpha) {
                 const nodes = simulation.nodes();
                 const mainNodes = nodes.filter(n => n.isMain);
@@ -347,10 +367,10 @@ const App = () => {
                             const dx = node.x - mainNode.x;
                             const dy = node.y - mainNode.y;
                             const distance = Math.sqrt(dx * dx + dy * dy);
-                            const minDistance = calculateRadius(mainNode) * 4; // Minimum safe distance
+                            const minDistance = calculateRadius(mainNode) * 6; // Increased from 3 to 6 for bigger buffer
                             
                             if (distance < minDistance) {
-                                const force = (minDistance - distance) / distance * alpha;
+                                const force = (minDistance - distance) / distance * alpha * 0.5; // Increased from 0.3 to 0.5
                                 node.vx += dx * force;
                                 node.vy += dy * force;
                             }
@@ -358,10 +378,38 @@ const App = () => {
                     }
                 });
             };
+        })
+        .force('pendulumMaintenance', d => {
+            // Stronger force to help counterparty nodes maintain their pendulum relationship with main nodes
+            return function(alpha) {
+                const nodes = simulation.nodes();
+                
+                nodes.forEach(node => {
+                    if (!node.isMain && !lockedNodes.has(node.id)) {
+                        // Find the main node this counterparty is connected to
+                        const connectedMainAddress = Array.from(node.connectedMainAddresses || [])[0];
+                        const mainNode = nodes.find(n => n.id === connectedMainAddress);
+                        
+                        if (mainNode) {
+                            const dx = node.x - mainNode.x;
+                            const dy = node.y - mainNode.y;
+                            const distance = Math.sqrt(dx * dx + dy * dy);
+                            const idealDistance = 180; // Match our link distance
+                            
+                            // Tighter tolerance and stronger force for more consistent distances
+                            if (Math.abs(distance - idealDistance) > 20) { // Reduced from 30 to 20
+                                const forceStrength = (distance - idealDistance) / distance * alpha * 0.4; // Increased from 0.2 to 0.4
+                                node.vx -= dx * forceStrength;
+                                node.vy -= dy * forceStrength;
+                            }
+                        }
+                    }
+                });
+            };
         });
 
-    // Add velocity decay to reduce oscillation
-    simulation.velocityDecay(0.4); // Increased from default 0.4 to reduce "bounciness"
+    // Increased velocity decay for more damping (slower, less bouncy motion)
+    simulation.velocityDecay(0.7); // Increased from 0.4 for more damping
 
     const svg = d3.select(svgRef.current);
     const width = window.innerWidth;
@@ -491,6 +539,126 @@ const App = () => {
       });
     });
     
+    // Process expanded links: replace aggregated links with individual transaction links
+    let finalLinks = [...links]; // Start with all original links
+    
+    // Only process if there are expanded links
+    if (expandedLinks.size > 0) {
+      finalLinks = [];
+      const processedExpandedLinks = new Set();
+      
+      links.forEach(link => {
+        const sourceNode = addressMap.get(link.source);
+        const targetNode = addressMap.get(link.target);
+        
+        if (sourceNode && targetNode) {
+          const mainNode = sourceNode.isMain ? sourceNode : targetNode;
+          const counterpartyNode = sourceNode.isMain ? targetNode : sourceNode;
+          const linkId = `${mainNode.id}-${counterpartyNode.id}`;
+          
+          if (expandedLinks.has(linkId) && !processedExpandedLinks.has(linkId)) {
+            // Replace with individual transaction links
+            const transactions = expandedLinks.get(linkId);
+            processedExpandedLinks.add(linkId);
+            
+            transactions.forEach((tx, index) => {
+              // Detailed debugging to understand the transaction structure
+              console.log(`🔍 Raw Transaction ${index}:`, {
+                tokenSent: tx.tokenSent,
+                tokenReceived: tx.tokenReceived,
+                volumeUsd: tx.volumeUsd,
+                mainNodeId: mainNode.id,
+                counterpartyNodeId: counterpartyNode.id
+              });
+              
+              // Fix direction detection - focus on primary transaction direction
+              let isOutgoing = false;
+              let debugInfo = {};
+              
+              // Check if main address is sending the primary token
+              if (tx.tokenSent && tx.tokenSent.length > 0) {
+                const tokenSentData = tx.tokenSent[0];
+                const fromAddr = tokenSentData[9]; // fromAddr2 field
+                const toAddr = tokenSentData[10]; // toAddr2 field
+                const sentAmount = tokenSentData[3]; // USD value
+                
+                debugInfo.tokenSent = {
+                  fromAddr,
+                  toAddr,
+                  sentAmount,
+                  isMainSender: fromAddr?.toLowerCase() === mainNode.id.toLowerCase(),
+                  isCounterpartyReceiver: toAddr?.toLowerCase() === counterpartyNode.id.toLowerCase()
+                };
+                
+                // If main is sender TO counterparty, it's outgoing
+                if (fromAddr?.toLowerCase() === mainNode.id.toLowerCase() && 
+                    toAddr?.toLowerCase() === counterpartyNode.id.toLowerCase()) {
+                  isOutgoing = true;
+                }
+              }
+              
+              // Check if main address is receiving the primary token
+              if (tx.tokenReceived && tx.tokenReceived.length > 0) {
+                const tokenReceivedData = tx.tokenReceived[0];
+                const fromAddr = tokenReceivedData[9]; // fromAddr2 field
+                const toAddr = tokenReceivedData[10]; // toAddr2 field
+                const receivedAmount = tokenReceivedData[3]; // USD value
+                
+                debugInfo.tokenReceived = {
+                  fromAddr,
+                  toAddr,
+                  receivedAmount,
+                  isCounterpartySender: fromAddr?.toLowerCase() === counterpartyNode.id.toLowerCase(),
+                  isMainReceiver: toAddr?.toLowerCase() === mainNode.id.toLowerCase()
+                };
+                
+                // If counterparty is sender TO main, it's incoming (and not already determined as outgoing)
+                if (!isOutgoing && 
+                    fromAddr?.toLowerCase() === counterpartyNode.id.toLowerCase() && 
+                    toAddr?.toLowerCase() === mainNode.id.toLowerCase()) {
+                  isOutgoing = false;
+                }
+              }
+              
+              // If we still haven't determined direction, use the volumeUsd sign or default logic
+              if (!debugInfo.tokenSent?.isMainSender && !debugInfo.tokenReceived?.isMainReceiver) {
+                // Fallback to original aggregated link direction
+                isOutgoing = tx.volumeUsd < 0;
+                debugInfo.fallback = true;
+              }
+              
+              const direction = isOutgoing ? 'outgoing' : 'incoming';
+              
+              console.log(`🎯 Transaction ${index} ANALYSIS:`, {
+                ...debugInfo,
+                finalDirection: direction,
+                isOutgoing: isOutgoing,
+                reasoning: isOutgoing ? 'Main → Counterparty' : 'Counterparty → Main'
+              });
+              
+              finalLinks.push({
+                source: link.source,
+                target: link.target,
+                value: isOutgoing ? -Math.abs(tx.volumeUsd) : Math.abs(tx.volumeUsd),
+                isTransactionLink: true,
+                transaction: tx,
+                direction: direction,
+                linkId: linkId,
+                transactionIndex: index,
+                totalTransactions: transactions.length
+              });
+            });
+          } else {
+            // Keep original aggregated link (not expanded)
+            finalLinks.push(link);
+          }
+        } else {
+          // If we can't find the nodes, keep the original link
+          finalLinks.push(link);
+        }
+      });
+    }
+
     // When creating new nodes, restore their previous positions
     nodes.forEach(node => {
       const oldPos = oldNodes.get(node.id);
@@ -501,6 +669,25 @@ const App = () => {
         if (node.isMain || lockedNodes.has(node.id)) {
           node.fx = oldPos.fx;
           node.fy = oldPos.fy;
+        }
+      } else if (!node.isMain) {
+        // Position new counterparty nodes based on netflow
+        // Find the main node this counterparty is connected to
+        const connectedMainAddress = Array.from(node.connectedMainAddresses)[0];
+        const mainNode = addressMap.get(connectedMainAddress);
+        
+        if (mainNode && mainNode.x && mainNode.y) {
+          // Positive netflow (receiving money) goes to the left, negative netflow (sending money) goes to the right
+          const side = node.usdNetflow > 0 ? -1 : 1; // Left side for positive, right side for negative
+          const distance = 150 + Math.random() * 100; // Random distance between 150-250px
+          const angle = (Math.random() - 0.5) * Math.PI * 0.6; // ±54 degrees spread
+          
+          node.x = mainNode.x + side * distance * Math.cos(angle);
+          node.y = mainNode.y + distance * Math.sin(angle);
+        } else {
+          // Fallback to random positioning if main node position is not available
+          node.x = Math.random() * width;
+          node.y = Math.random() * height;
         }
       }
     });
@@ -573,26 +760,145 @@ const App = () => {
 
     const link = container.append('g')
       .selectAll('path')
-      .data(links)
+      .data(finalLinks)
       .enter()
       .append('path')
       .attr('class', 'link')
       .attr('stroke', d => {
         const sourceNode = addressMap.get(d.source.id || d.source);
         const targetNode = addressMap.get(d.target.id || d.target);
-        return (sourceNode.isMain && targetNode.isMain) ? '#FFFFFF' : (d.value > 0 ? '#34CF82' : '#FF7F7B');
+        
+        if (d.isTransactionLink) {
+          // Color based on direction relative to main node
+          return d.direction === 'incoming' ? '#34CF82' : '#FF7F7B';
+        }
+        
+        return (sourceNode && targetNode && sourceNode.isMain && targetNode.isMain) ? '#FFFFFF' : (d.value > 0 ? '#34CF82' : '#FF7F7B');
       })
       .attr('stroke-width', d => {
         const sourceNode = addressMap.get(d.source.id || d.source);
         const targetNode = addressMap.get(d.target.id || d.target);
-        return (sourceNode.isMain && targetNode.isMain) ? 1 : 0.25;
+        
+        if (d.isTransactionLink) {
+          // Extremely thin for individual transactions
+          return 0.01;
+        }
+        
+        return (sourceNode && targetNode && sourceNode.isMain && targetNode.isMain) ? 1 : 0.4; // Make aggregated links thicker for contrast
       })
       .attr('marker-end', d => {
         const sourceNode = addressMap.get(d.source.id || d.source);
         const targetNode = addressMap.get(d.target.id || d.target);
-        return (sourceNode.isMain && targetNode.isMain) ? 'url(#arrow)' : '';
+        return (sourceNode && targetNode && sourceNode.isMain && targetNode.isMain) ? 'url(#arrow)' : '';
       })
-      .attr('fill', 'none');
+      .attr('fill', 'none')
+      .style('cursor', d => {
+        const sourceNode = addressMap.get(d.source.id || d.source);
+        const targetNode = addressMap.get(d.target.id || d.target);
+        
+        if (d.isTransactionLink) {
+          return 'default'; // Transaction links show tooltips but aren't clickable
+        }
+        
+        // Only main-to-counterparty aggregated links are clickable
+        return ((sourceNode.isMain && !targetNode.isMain) || (!sourceNode.isMain && targetNode.isMain)) ? 'pointer' : 'default';
+      })
+      .on('mouseenter', function(event, d) {
+        if (d.isTransactionLink && d.transaction) {
+          const tx = d.transaction;
+          // Extract token symbol from tokenSent or tokenReceived arrays
+          let tokenSymbol = 'Unknown';
+          if (tx.tokenSent && tx.tokenSent.length > 0 && tx.tokenSent[0].length > 0) {
+            tokenSymbol = tx.tokenSent[0][0]; // First element of first tokenSent array
+          } else if (tx.tokenReceived && tx.tokenReceived.length > 0 && tx.tokenReceived[0].length > 0) {
+            tokenSymbol = tx.tokenReceived[0][0]; // First element of first tokenReceived array
+          }
+          
+          const tooltipContent = `<strong>${formatNumber(tx.volumeUsd)}</strong><br>${tokenSymbol}<br><small>${new Date(tx.blockTimestamp).toLocaleDateString()}</small>`;
+          
+          tooltip
+            .style('display', 'block')
+            .html(tooltipContent)
+            .style('left', `${event.pageX + 10}px`)
+            .style('top', `${event.pageY - 10}px`);
+        }
+      })
+      .on('mouseleave', function() {
+        tooltip.style('display', 'none');
+      })
+      .on('mousemove', function(event) {
+        if (tooltip.style('display') === 'block') {
+          tooltip
+            .style('left', `${event.pageX + 10}px`)
+            .style('top', `${event.pageY - 10}px`);
+        }
+      })
+      .on('click', async function(event, d) {
+        // Skip transaction links - they're not clickable
+        if (d.isTransactionLink) {
+          return;
+        }
+        
+        const sourceNode = addressMap.get(d.source.id || d.source);
+        const targetNode = addressMap.get(d.target.id || d.target);
+        
+        // Only handle clicks on main-to-counterparty links
+        if (!((sourceNode.isMain && !targetNode.isMain) || (!sourceNode.isMain && targetNode.isMain))) {
+          return;
+        }
+        
+        event.stopPropagation();
+        
+        const mainNode = sourceNode.isMain ? sourceNode : targetNode;
+        const counterpartyNode = sourceNode.isMain ? targetNode : sourceNode;
+        const linkId = `${mainNode.id}-${counterpartyNode.id}`;
+        
+        // Check if link is already expanded
+        if (expandedLinks.has(linkId)) {
+          // Collapse: remove expanded transactions
+          setExpandedLinks(prev => {
+            const newMap = new Map(prev);
+            newMap.delete(linkId);
+            return newMap;
+          });
+          // Trigger re-render to show aggregated link again
+          createVisualization(data);
+          return;
+        }
+        
+        // Expand: fetch individual transactions
+        setLoadingTransactions(prev => new Set(prev).add(linkId));
+        
+        try {
+          console.log(`🔍 Fetching transactions between ${mainNode.id} and ${counterpartyNode.id}`);
+          const transactionData = await fetchTransactionsBetweenAddresses(
+            mainNode.id, 
+            counterpartyNode.id, 
+            timeframe
+          );
+          
+          if (transactionData.data && transactionData.data.length > 0) {
+            console.log(`💾 Storing ${transactionData.data.length} transactions for link ${linkId}`);
+            setExpandedLinks(prev => {
+              const newMap = new Map(prev);
+              newMap.set(linkId, transactionData.data);
+              console.log(`📊 ExpandedLinks now has ${newMap.size} expanded links`);
+              return newMap;
+            });
+          } else {
+            console.log('No transactions found between these addresses');
+          }
+        } catch (error) {
+          console.error('Error fetching transactions:', error);
+          setError(`Failed to load transactions: ${error.message}`);
+        } finally {
+          setLoadingTransactions(prev => {
+            const newSet = new Set(prev);
+            newSet.delete(linkId);
+            return newSet;
+          });
+        }
+      });
 
     const node = container.append('g')
       .selectAll('g')
@@ -704,7 +1010,7 @@ const App = () => {
         .style('line-height', '1.4') :
       d3.select('.custom-tooltip');
 
-    // Add instant hover events
+    // Add instant hover events for nodes
     node
       .on('mouseenter', function(event, d) {
         let tooltipContent;
@@ -767,6 +1073,7 @@ const App = () => {
         
         // Create menu items based on node type
         const menuOptions = [
+          { label: 'Copy Address', action: 'copyAddress' },
           { label: 'Add temporary label', action: 'label' },
           { label: 'Highlight', action: 'highlight' },
           ...(d.isMain ? [] : [{ label: 'Add Wallet', action: 'addWallet' }]),
@@ -789,6 +1096,23 @@ const App = () => {
             const nodeElement = d3.select(event.target.closest('.bubble'));
             
             switch(menuItem.action) {
+              case 'copyAddress':
+                navigator.clipboard.writeText(selectedNode.address).then(() => {
+                  console.log('Address copied to clipboard:', selectedNode.address);
+                  // You could add a toast notification here if needed
+                }).catch(err => {
+                  console.error('Failed to copy address:', err);
+                  // Fallback for older browsers
+                  const textArea = document.createElement('textarea');
+                  textArea.value = selectedNode.address;
+                  document.body.appendChild(textArea);
+                  textArea.select();
+                  document.execCommand('copy');
+                  document.body.removeChild(textArea);
+                });
+                menu.style('display', 'none');
+                break;
+              
               case 'label':
                 const label = prompt('Enter label:');
                 if (label) {
@@ -900,7 +1224,7 @@ const App = () => {
                     // Original code for deleting counterparty nodes
                     setDeletedNodes(prev => new Set(prev).add(nodeId));
                     
-                    const newLinks = links.filter(l => l.source.id !== nodeId && l.target.id !== nodeId);
+                    const newLinks = finalLinks.filter(l => l.source.id !== nodeId && l.target.id !== nodeId);
                     const newNodes = nodes.filter(n => n.id !== nodeId);
                     
                     nodeElement.remove();
@@ -938,7 +1262,7 @@ const App = () => {
       .on('tick', ticked);
 
     simulation.force('link')
-      .links(links);
+      .links(finalLinks);
 
     // Apply zoom transform at the end
     svg.call(zoom)
@@ -952,9 +1276,10 @@ const App = () => {
         const sourceNode = addressMap.get(d.source.id || d.source);
         const targetNode = addressMap.get(d.target.id || d.target);
         
-        if (sourceNode.isMain && targetNode.isMain) {
-          const dx = d.target.x - d.source.x;
-          const dy = d.target.y - d.source.y;
+        if (sourceNode && targetNode && sourceNode.isMain && targetNode.isMain) {
+          // Main-to-main links with curved arrows
+          const dx = targetNode.x - sourceNode.x;
+          const dy = targetNode.y - sourceNode.y;
           const dr = Math.sqrt(dx * dx + dy * dy);
           
           // Calculate node radii
@@ -962,10 +1287,10 @@ const App = () => {
           const targetRadius = calculateRadius(targetNode);
           
           // Calculate start and end points at node borders
-          const startX = d.source.x + (sourceRadius * dx / dr);
-          const startY = d.source.y + (sourceRadius * dy / dr);
-          const endX = d.target.x - (targetRadius * dx / dr);
-          const endY = d.target.y - (targetRadius * dy / dr);
+          const startX = sourceNode.x + (sourceRadius * dx / dr);
+          const startY = sourceNode.y + (sourceRadius * dy / dr);
+          const endX = targetNode.x - (targetRadius * dx / dr);
+          const endY = targetNode.y - (targetRadius * dy / dr);
           
           // Calculate the points for the curved path
           const midX = (startX + endX) / 2;
@@ -981,9 +1306,55 @@ const App = () => {
           const arrowEndY = qt * qt * startY + 2 * qt * t * controlY + t * t * endY;
           
           return `M${startX},${startY} Q${controlX},${controlY} ${arrowEndX},${arrowEndY}`;
-        } else {
-          return `M${d.source.x},${d.source.y} L${d.target.x},${d.target.y}`;
+        } else if (sourceNode && targetNode) {
+          // Handle transaction links and regular aggregated links
+          if (d.isTransactionLink) {
+            const dx = targetNode.x - sourceNode.x;
+            const dy = targetNode.y - sourceNode.y;
+            const dr = Math.sqrt(dx * dx + dy * dy);
+            
+            // Calculate node radii
+            const sourceRadius = calculateRadius(sourceNode);
+            const targetRadius = calculateRadius(targetNode);
+            
+            // Calculate start and end points at node borders
+            const startX = sourceNode.x + (sourceRadius * dx / dr);
+            const startY = sourceNode.y + (sourceRadius * dy / dr);
+            const endX = targetNode.x - (targetRadius * dx / dr);
+            const endY = targetNode.y - (targetRadius * dy / dr);
+            
+            // Only add curves if there are multiple transactions
+            if (d.totalTransactions > 1) {
+              // Create curves for multiple transactions to spread them out
+              const transactionIndex = d.transactionIndex || 0;
+              const totalTransactions = d.totalTransactions;
+              
+              // Spread transactions evenly around center
+              const spreadRange = 1.0; // Total spread range
+              const spreadStep = spreadRange / Math.max(1, totalTransactions - 1);
+              const spreadOffset = (transactionIndex * spreadStep) - (spreadRange / 2);
+              
+              // Calculate perpendicular offset for curve
+              const perpX = -dy / dr; // Perpendicular vector
+              const perpY = dx / dr;
+              const curveDistance = 25 + Math.abs(spreadOffset) * 40; // Increased spread
+              
+              const midX = (startX + endX) / 2;
+              const midY = (startY + endY) / 2;
+              const controlX = midX + perpX * curveDistance * Math.sign(spreadOffset || 1);
+              const controlY = midY + perpY * curveDistance * Math.sign(spreadOffset || 1);
+              
+              return `M${startX},${startY} Q${controlX},${controlY} ${endX},${endY}`;
+            } else {
+              // Single transaction - keep straight
+              return `M${startX},${startY} L${endX},${endY}`;
+            }
+          } else {
+            // Regular straight line for aggregated links
+            return `M${sourceNode.x},${sourceNode.y} L${targetNode.x},${targetNode.y}`;
+          }
         }
+        return '';
       });
 
       node.attr('transform', d => `translate(${d.x},${d.y})`);
@@ -994,7 +1365,11 @@ const App = () => {
       d3.selectAll('.context-menu').style('display', 'none');
       d3.selectAll('.color-menu').remove();
       
-      if (!event.active) simulation.alphaTarget(0.3).restart();
+      // Hide tooltip when starting to drag
+      tooltip.style('display', 'none');
+      
+      // Gentler simulation restart for smoother motion
+      if (!event.active) simulation.alphaTarget(0.1).restart(); // Reduced from 0.3
       d.fx = d.x;
       d.fy = d.y;
       
@@ -1002,27 +1377,78 @@ const App = () => {
       d.isDragging = false; // Will be set to true if actually moved
       d.dragStartX = event.x;
       d.dragStartY = event.y;
+      
+      // If dragging a main node, store initial relative angles of connected counterparties
+      if (d.isMain) {
+        d.counterpartyAngles = new Map();
+        nodes.forEach(node => {
+          if (!node.isMain && !lockedNodes.has(node.id) && node.connectedMainAddresses && node.connectedMainAddresses.has(d.id)) {
+            const dx = node.x - d.x;
+            const dy = node.y - d.y;
+            const angle = Math.atan2(dy, dx);
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            d.counterpartyAngles.set(node.id, { angle, idealDistance: distance });
+          }
+        });
+      }
     }
 
     function dragged(event, d) {
       d.fx = event.x;
       d.fy = event.y;
       
-      // Check if we've moved enough to consider this a drag
-      const dx = event.x - d.dragStartX;
-      const dy = event.y - d.dragStartY;
-      const distance = Math.sqrt(dx * dx + dy * dy);
+      // If dragging a main node, apply gentle forces to maintain relative positions
+      if (d.isMain && d.counterpartyAngles) {
+        nodes.forEach(node => {
+          if (!node.isMain && !lockedNodes.has(node.id) && d.counterpartyAngles.has(node.id)) {
+            const stored = d.counterpartyAngles.get(node.id);
+            const currentDx = node.x - d.fx;
+            const currentDy = node.y - d.fy;
+            const currentDistance = Math.sqrt(currentDx * currentDx + currentDy * currentDy);
+            
+            // Calculate ideal position based on stored angle and distance
+            const idealX = d.fx + stored.idealDistance * Math.cos(stored.angle);
+            const idealY = d.fy + stored.idealDistance * Math.sin(stored.angle);
+            
+            // Apply gentle force towards ideal position (but not too strong to allow natural movement)
+            const forceStrength = 0.15; // Gentle force to maintain position
+            const pullX = (idealX - node.x) * forceStrength;
+            const pullY = (idealY - node.y) * forceStrength;
+            
+            node.vx += pullX;
+            node.vy += pullY;
+            
+            // Also prevent excessive stretching
+            const maxDistance = stored.idealDistance * 1.3; // Allow 30% stretch
+            if (currentDistance > maxDistance) {
+              const pullStrength = 0.2;
+              const excessPullFactor = (currentDistance - maxDistance) / currentDistance * pullStrength;
+              node.vx -= currentDx * excessPullFactor;
+              node.vy -= currentDy * excessPullFactor;
+            }
+          }
+        });
+      }
       
-      if (distance > 5) { // 5px threshold for drag vs click
+      // Check if we've moved enough to consider this a drag
+      const dragDistance = Math.sqrt((event.x - d.dragStartX) ** 2 + (event.y - d.dragStartY) ** 2);
+      
+      if (dragDistance > 5) { // 5px threshold for drag vs click
         d.isDragging = true;
       }
     }
 
     function dragended(event, d) {
+      // Gentler end to dragging
       if (!event.active) simulation.alphaTarget(0);
       // Make both main nodes and counterparty nodes stick where they're dropped
       d.fx = d.x;
       d.fy = d.y;
+      
+      // Clean up stored angles
+      if (d.isMain && d.counterpartyAngles) {
+        delete d.counterpartyAngles;
+      }
       
       // Mark counterparty nodes as locked when manually positioned (only if actually dragged)
       if (!d.isMain && d.isDragging) {
@@ -1049,11 +1475,11 @@ const App = () => {
     function arrowRepulsionForce(alpha) {
         nodes.forEach(node => {
             if (!node.isMain) {
-                links.forEach(link => {
+                finalLinks.forEach(link => {
                     const sourceNode = addressMap.get(link.source.id || link.source);
                     const targetNode = addressMap.get(link.target.id || link.target);
 
-                    if (sourceNode.isMain && targetNode.isMain) {
+                    if (sourceNode && targetNode && sourceNode.isMain && targetNode.isMain) {
                         const lineVec = { x: targetNode.x - sourceNode.x, y: targetNode.y - sourceNode.y };
                         const nodeVec = { x: node.x - sourceNode.x, y: node.y - sourceNode.y };
                         const lineLength = Math.sqrt(lineVec.x * lineVec.x + lineVec.y * lineVec.y);
@@ -1064,9 +1490,9 @@ const App = () => {
                         };
                         const distToLine = Math.sqrt((node.x - closestPoint.x) ** 2 + (node.y - closestPoint.y) ** 2);
 
-                        const minDistance = 70; // Further increased minimum distance
+                        const minDistance = 90; // Increased for longer pendulum effect
                         if (distToLine < minDistance) {
-                            const force = (minDistance - distToLine) / distToLine * alpha;
+                            const force = (minDistance - distToLine) / distToLine * alpha * 0.4; // Gentler force with 0.4 multiplier
                             node.vx += (node.x - closestPoint.x) * force;
                             node.vy += (node.y - closestPoint.y) * force;
                         }
@@ -1079,42 +1505,12 @@ const App = () => {
     // Add this force to the simulation
     simulation.force('arrowRepulsion', arrowRepulsionForce);
 
-    // Modify the link path to use a curved path and add arrows
-    link.attr('d', function(d) {
-        const sourceNode = addressMap.get(d.source.id || d.source);
-        const targetNode = addressMap.get(d.target.id || d.target);
-
-        if (sourceNode.isMain && targetNode.isMain) {
-            // Get the netflow value for arrow direction
-            const sourceTransactions = data.find(set => set.mainAddress === sourceNode.id)?.transactions || [];
-            const transaction = sourceTransactions.find(t => t.interactingAddress === targetNode.id);
-            const netflow = transaction ? parseFloat(transaction.usdNetflow) : 0;
-            
-            // Add arrow marker based on netflow direction
-            const isNetFlowLink = netflow < 0;  // Flipped logic
-            d3.select(this).attr('marker-mid', isNetFlowLink ? 'url(#white-arrow)' : '');
-            
-            // Calculate node radii and border points
-            const dx = d.target.x - d.source.x;
-            const dy = d.target.y - d.source.y;
-            const dr = Math.sqrt(dx * dx + dy * dy);
-            const sourceRadius = calculateRadius(sourceNode);
-            const targetRadius = calculateRadius(targetNode);
-            
-            const startX = d.source.x + (sourceRadius * dx / dr);
-            const startY = d.source.y + (sourceRadius * dy / dr);
-            const endX = d.target.x - (targetRadius * dx / dr);
-            const endY = d.target.y - (targetRadius * dy / dr);
-            
-            const midX = (startX + endX) / 2;
-            const midY = (startY + endY) / 2;
-            const controlX = midX + (dy * 0.6); // Further increased curvature
-            const controlY = midY - (dx * 0.6);
-            return `M${startX},${startY} Q${controlX},${controlY} ${endX},${endY}`;
-        } else {
-            return `M${d.source.x},${d.source.y} L${d.target.x},${d.target.y}`;
-        }
-    });
+    console.log(`🔗 Debug: Created ${links.length} original links, ${finalLinks.length} final links`);
+    console.log('🔗 Final links sample:', finalLinks.slice(0, 3));
+    console.log('🔗 Expanded links count:', expandedLinks.size);
+    if (expandedLinks.size > 0) {
+      console.log('🔗 Expanded links data:', Array.from(expandedLinks.entries()));
+    }
   };
 
   // Add restore function for deleted nodes
