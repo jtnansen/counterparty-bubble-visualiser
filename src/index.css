@@ -26,7 +26,7 @@ body {
 }
 
 .link {
-  stroke-width: 2px;
+  /* stroke-width: 2px; - Removed to allow D3 to control stroke-width */
 }
 
 input[type="file"], input[type="radio"], input[type="checkbox"], input[type="number"], label {

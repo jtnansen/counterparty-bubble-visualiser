@@ -2,7 +2,7 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 import * as d3 from 'd3';
 import { useExpandedLinks } from '../../hooks/useExpandedLinks.js';
 import ContextMenu from './ContextMenu.jsx';
-import { COLORS, PHYSICS, UI, SIZES } from '../../utils/constants.js';
+import { COLORS, PHYSICS, UI, SIZES, ANIMATION } from '../../utils/constants.js';
 import { calculateRadius, calculateCollisionRadius, formatNumber } from '../../utils/calculations.js';
 import { 
   getNodeDisplayText, 
@@ -82,6 +82,19 @@ const D3Visualization = ({
       const svg = d3.select(svgRef.current);
       const width = window.innerWidth - UI.CONTROLS_WIDTH;
       const height = window.innerHeight;
+
+      console.log(`🚀 CREATE VISUALIZATION - Start`);
+      console.log(`📊 Processing ${nodes.length} nodes and ${links.length} original links`);
+      console.log(`🔗 Final links after expansion processing: ${finalLinks.length}`);
+      
+      // Count transaction links at start
+      const initialTransactionLinks = finalLinks.filter(link => link.isTransactionLink);
+      const initialAggregatedLinks = finalLinks.filter(link => !link.isTransactionLink);
+      console.log(`📈 INITIAL: Transaction links: ${initialTransactionLinks.length}, Aggregated links: ${initialAggregatedLinks.length}`);
+      
+      if (initialTransactionLinks.length > 0) {
+        console.log(`🔗 Found ${initialTransactionLinks.length} transaction links to render`);
+      }
 
       // Store current transform before clearing
       const oldTransform = currentTransform || d3.zoomIdentity;
@@ -243,21 +256,8 @@ const D3Visualization = ({
         .on('zoom', (event) => {
           const { transform } = event;
           setCurrentTransform(transform);
+          // Zoom transform applied to container only - links maintain constant width
           container.style('transform', `translate(${transform.x}px,${transform.y}px) scale(${transform.k})`);
-          
-          // Update stroke widths for zoom
-          link.attr('stroke-width', d => {
-            const sourceNode = addressMap.get(d.source.id || d.source);
-            const targetNode = addressMap.get(d.target.id || d.target);
-            
-            if (d.isTransactionLink) {
-              return SIZES.LINK_WIDTH.TRANSACTION / transform.k;
-            }
-            
-            return (sourceNode && targetNode && sourceNode.isMain && targetNode.isMain) 
-              ? SIZES.LINK_WIDTH.MAIN_TO_MAIN / transform.k 
-              : SIZES.LINK_WIDTH.AGGREGATED / transform.k;
-          });
         });
 
       // Add arrow markers
@@ -300,6 +300,12 @@ const D3Visualization = ({
         const { nodes: currentNodes, links: currentLinks, addressMap: currentAddressMap } = getProcessedData();
         const updatedFinalLinks = processLinksWithExpansions(currentLinks, currentAddressMap);
         
+        // Count transaction links
+        const transactionLinks = updatedFinalLinks.filter(link => link.isTransactionLink);
+        if (transactionLinks.length > 0) {
+          console.log(`🔗 Updating ${transactionLinks.length} transaction links`);
+        }
+        
         // Update the link data and redraw
         const linkContainer = container.select('g.links-container');
         const linkSelection = linkContainer.selectAll('path')
@@ -321,7 +327,8 @@ const D3Visualization = ({
             const targetNode = currentAddressMap.get(d.target.id || d.target);
             
             if (d.isTransactionLink) {
-              return d.direction === 'incoming' ? COLORS.GREEN_STROKE : COLORS.RED_STROKE;
+              const color = d.direction === 'incoming' ? COLORS.GREEN_STROKE : COLORS.RED_STROKE;
+              return color;
             }
             
             return (sourceNode && targetNode && sourceNode.isMain && targetNode.isMain) 
@@ -337,7 +344,7 @@ const D3Visualization = ({
             }
             
             return (sourceNode && targetNode && sourceNode.isMain && targetNode.isMain) 
-              ? SIZES.LINK_WIDTH.MAIN_TO_MAIN 
+              ? SIZES.LINK_WIDTH.MAIN_TO_MAIN
               : SIZES.LINK_WIDTH.AGGREGATED;
           })
           .attr('marker-end', d => {
@@ -399,7 +406,8 @@ const D3Visualization = ({
           const targetNode = addressMap.get(d.target.id || d.target);
           
           if (d.isTransactionLink) {
-            return d.direction === 'incoming' ? COLORS.GREEN_STROKE : COLORS.RED_STROKE;
+            const color = d.direction === 'incoming' ? COLORS.GREEN_STROKE : COLORS.RED_STROKE;
+            return color;
           }
           
           return (sourceNode && targetNode && sourceNode.isMain && targetNode.isMain) 
@@ -527,7 +535,7 @@ const D3Visualization = ({
         .attr('x', d => -calculateRadius(d, sizeMetric, scaleFactor) * 0.7)
         .attr('y', d => -calculateRadius(d, sizeMetric, scaleFactor) * 0.7)
         .attr('fill', COLORS.WHITE)
-        .style('font-size', '12px')
+        .style('font-size', ANIMATION.LOCK_SYMBOL_SIZE)
         .style('cursor', 'pointer')
         .style('pointer-events', 'all')
         .style('color', COLORS.WHITE)
@@ -540,7 +548,6 @@ const D3Visualization = ({
           d.fx = null;
           d.fy = null;
           d3.select(this).remove();
-          simulation.alpha(0.5).restart();
         });
 
       // Add node interactions
@@ -675,8 +682,8 @@ const D3Visualization = ({
         tooltip.style('display', 'none');
         closeContextMenu();
         
-        // Gentler simulation restart for smoother motion
-        if (!event.active) simulation.alphaTarget(0.1).restart(); // Reduced from 0.3
+        // Gentle simulation activation for drag responsiveness - but only if simulation is stopped
+        if (!event.active) simulation.alphaTarget(0.05).restart();
         d.fx = d.x;
         d.fy = d.y;
         
@@ -745,7 +752,7 @@ const D3Visualization = ({
       }
 
       function dragended(event, d) {
-        // Gentler end to dragging
+        // Properly stop simulation when drag ends
         if (!event.active) simulation.alphaTarget(0);
         // Make both main nodes and counterparty nodes stick where they're dropped
         d.fx = d.x;
@@ -778,7 +785,7 @@ const D3Visualization = ({
       svg.call(zoom).call(zoom.transform, oldTransform);
 
       // Gentle simulation restart
-      simulation.alpha(0.3).restart();
+      simulation.alpha(0.1).restart(); // Reduced from 0.3 to prevent spasming
 
     } catch (error) {
       console.error('Error creating visualization:', error);

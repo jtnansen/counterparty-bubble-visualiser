@@ -68,8 +68,10 @@ export const useExpandedLinks = (timeframe) => {
     const processedExpandedLinks = new Set();
     
     originalLinks.forEach(link => {
-      const sourceNode = addressMap.get(link.source);
-      const targetNode = addressMap.get(link.target);
+      const sourceId = typeof link.source === 'object' ? link.source.id : link.source;
+      const targetId = typeof link.target === 'object' ? link.target.id : link.target;
+      const sourceNode = addressMap.get(sourceId);
+      const targetNode = addressMap.get(targetId);
       
       if (sourceNode && targetNode) {
         const mainNode = sourceNode.isMain ? sourceNode : targetNode;
