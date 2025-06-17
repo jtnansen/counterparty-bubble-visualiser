@@ -1,3 +1,4 @@
+// API endpoints - will be proxied by Vite locally and Vercel functions in production
 const NANSEN_API_URL = '/api/nansen/api/beta/profiler/address/counterparties';
 const NANSEN_TRANSACTIONS_API_URL = '/api/nansen/api/beta/profiler/address/transactions';
 
