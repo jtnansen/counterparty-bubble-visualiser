@@ -13,6 +13,29 @@ export default async function handler(req, res) {
   }
 
   try {
+    // Transform request body from frontend format to v1 API format
+    const params = req.body.parameters || {};
+    const pagination = req.body.pagination || {};
+
+    // Convert YYYY-MM-DD to ISO timestamp format
+    const fromDate = params.timeRange?.from ? `${params.timeRange.from}T00:00:00Z` : undefined;
+    const toDate = params.timeRange?.to ? `${params.timeRange.to}T23:59:59Z` : undefined;
+
+    const transformedBody = {
+      address: Array.isArray(params.walletAddresses) ? params.walletAddresses[0] : params.walletAddresses,
+      chain: params.chain,
+      date: {
+        from: fromDate,
+        to: toDate
+      },
+      group_by: params.groupBy,
+      pagination: {
+        page: pagination.page,
+        per_page: pagination.recordsPerPage
+      },
+      source_input: params.sourceInput
+    };
+
     // Proxy the request to Nansen API
     const response = await fetch('https://api.nansen.ai/api/v1/profiler/address/counterparties', {
       method: 'POST',
@@ -20,7 +43,7 @@ export default async function handler(req, res) {
         'apiKey': apiKey,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(req.body)
+      body: JSON.stringify(transformedBody)
     });
 
     // Handle response properly to avoid double-reading
