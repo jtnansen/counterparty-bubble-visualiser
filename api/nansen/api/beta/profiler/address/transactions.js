@@ -87,18 +87,28 @@ export default async function handler(req, res) {
 
     // Filter by counterparty address if specified (client-side filtering)
     if (counterpartyAddressFilter) {
+      const normalizedCounterparty = counterpartyAddressFilter.toLowerCase();
+
+      console.log(`Filtering transactions for counterparty: ${counterpartyAddressFilter}`);
+      console.log(`Total transactions before filter: ${transformedTransactions.length}`);
+
       transformedTransactions = transformedTransactions.filter(tx => {
-        // Check if counterparty address is in tokens_sent or tokens_received
+        // Check if counterparty address is in tokens_sent or tokens_received (case-insensitive)
         const hasCounterpartyInSent = tx.tokensSent?.some(token =>
-          token.from_address === counterpartyAddressFilter ||
-          token.to_address === counterpartyAddressFilter
+          token.from_address?.toLowerCase() === normalizedCounterparty ||
+          token.to_address?.toLowerCase() === normalizedCounterparty
         );
         const hasCounterpartyInReceived = tx.tokensReceived?.some(token =>
-          token.from_address === counterpartyAddressFilter ||
-          token.to_address === counterpartyAddressFilter
+          token.from_address?.toLowerCase() === normalizedCounterparty ||
+          token.to_address?.toLowerCase() === normalizedCounterparty
         );
         return hasCounterpartyInSent || hasCounterpartyInReceived;
       });
+
+      console.log(`Total transactions after filter: ${transformedTransactions.length}`);
+      if (transformedTransactions.length > 0) {
+        console.log(`Sample filtered transaction:`, transformedTransactions[0]);
+      }
     }
 
     return res.status(200).json({

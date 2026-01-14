@@ -355,15 +355,37 @@ const D3Visualization = ({
           .style('cursor', d => {
             const sourceNode = currentAddressMap.get(d.source.id || d.source);
             const targetNode = currentAddressMap.get(d.target.id || d.target);
-            
+
             if (d.isTransactionLink) {
-              return 'default';
+              return 'pointer'; // Transaction links are now clickable to copy hash
             }
-            
+
             return ((sourceNode?.isMain && !targetNode?.isMain) || (!sourceNode?.isMain && targetNode?.isMain)) ? 'pointer' : 'default';
           })
           .on('click', async function(event, d) {
-            if (d.isTransactionLink) return;
+            // If it's a transaction link, copy the hash to clipboard
+            if (d.isTransactionLink) {
+              if (d.transaction?.transactionHash) {
+                try {
+                  await navigator.clipboard.writeText(d.transaction.transactionHash);
+                  console.log('Transaction hash copied:', d.transaction.transactionHash);
+
+                  // Show a brief confirmation
+                  tooltip
+                    .style('display', 'block')
+                    .html('<strong style="color: #34CF82;">Hash copied!</strong>')
+                    .style('left', `${event.pageX + UI.TOOLTIP_OFFSET}px`)
+                    .style('top', `${event.pageY - UI.TOOLTIP_OFFSET}px`);
+
+                  setTimeout(() => {
+                    tooltip.style('display', 'none');
+                  }, 1000);
+                } catch (err) {
+                  console.error('Failed to copy hash:', err);
+                }
+              }
+              return;
+            }
 
             const sourceNode = currentAddressMap.get(d.source.id || d.source);
             const targetNode = currentAddressMap.get(d.target.id || d.target);
@@ -405,7 +427,12 @@ const D3Visualization = ({
                 }
               }
 
-              const tooltipContent = `<strong>${formatNumber(tx.volumeUsd)}</strong><br>${tokenSymbol}${tokenAmount}<br><small>${new Date(tx.blockTimestamp).toLocaleDateString()}</small>`;
+              // Show transaction hash preview (first 10 chars)
+              const hashPreview = tx.transactionHash ?
+                `${tx.transactionHash.slice(0, 10)}...` :
+                'No hash';
+
+              const tooltipContent = `<strong>${formatNumber(tx.volumeUsd)}</strong><br>${tokenSymbol}${tokenAmount}<br><small>${new Date(tx.blockTimestamp).toLocaleDateString()}</small><br><span style="color: #888; font-size: 10px;">${hashPreview}</span><br><small style="color: #34CF82;">Click to copy hash</small>`;
 
               tooltip
                 .style('display', 'block')
@@ -475,15 +502,37 @@ const D3Visualization = ({
         .style('cursor', d => {
           const sourceNode = addressMap.get(d.source.id || d.source);
           const targetNode = addressMap.get(d.target.id || d.target);
-          
+
           if (d.isTransactionLink) {
-            return 'default';
+            return 'pointer'; // Transaction links are now clickable to copy hash
           }
-          
+
           return ((sourceNode?.isMain && !targetNode?.isMain) || (!sourceNode?.isMain && targetNode?.isMain)) ? 'pointer' : 'default';
         })
         .on('click', async function(event, d) {
-          if (d.isTransactionLink) return;
+          // If it's a transaction link, copy the hash to clipboard
+          if (d.isTransactionLink) {
+            if (d.transaction?.transactionHash) {
+              try {
+                await navigator.clipboard.writeText(d.transaction.transactionHash);
+                console.log('Transaction hash copied:', d.transaction.transactionHash);
+
+                // Show a brief confirmation
+                tooltip
+                  .style('display', 'block')
+                  .html('<strong style="color: #34CF82;">Hash copied!</strong>')
+                  .style('left', `${event.pageX + UI.TOOLTIP_OFFSET}px`)
+                  .style('top', `${event.pageY - UI.TOOLTIP_OFFSET}px`);
+
+                setTimeout(() => {
+                  tooltip.style('display', 'none');
+                }, 1000);
+              } catch (err) {
+                console.error('Failed to copy hash:', err);
+              }
+            }
+            return;
+          }
           
           const sourceNode = addressMap.get(d.source.id || d.source);
           const targetNode = addressMap.get(d.target.id || d.target);
