@@ -14,7 +14,7 @@ export default async function handler(req, res) {
 
   try {
     // Proxy the request to Nansen API
-    const response = await fetch('https://pro-api.nansen.ai/api/beta/profiler/address/transactions', {
+    const response = await fetch('https://api.nansen.ai/api/v1/profiler/address/transactions', {
       method: 'POST',
       headers: {
         'apiKey': apiKey,
