@@ -91,6 +91,39 @@ const TopNavbar = ({
         </button>
       </div>
 
+      {/* Main Nodes Dropdown */}
+      {data.length > 0 && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+          <label style={{ fontSize: '12px', whiteSpace: 'nowrap' }}>Main Nodes:</label>
+          <select
+            style={{
+              padding: '6px 8px',
+              background: COLORS.UI_BACKGROUND,
+              color: COLORS.WHITE,
+              border: `1px solid ${COLORS.ACCENT}`,
+              borderRadius: '4px',
+              fontSize: '12px',
+              cursor: 'pointer'
+            }}
+            onChange={(e) => {
+              if (e.target.value) {
+                // Copy address to clipboard
+                navigator.clipboard.writeText(e.target.value);
+                console.log('Main node address copied:', e.target.value);
+              }
+            }}
+            defaultValue=""
+          >
+            <option value="">Select node ({data.length})</option>
+            {data.map((dataset, index) => (
+              <option key={dataset.mainAddress} value={dataset.mainAddress}>
+                {dataset.mainAddress.slice(0, 10)}...{dataset.mainAddress.slice(-6)} ({dataset.transactions.length} counterparties)
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
       {/* Timeframe Selector */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
         <label style={{ fontSize: '12px', whiteSpace: 'nowrap' }}>Timeframe:</label>

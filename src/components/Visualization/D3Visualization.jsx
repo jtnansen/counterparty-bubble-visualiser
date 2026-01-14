@@ -13,15 +13,15 @@ import {
   generateNodeTooltip
 } from '../../utils/nodeUtils.js';
 
-const D3Visualization = ({ 
-  data, 
-  sizeMetric, 
-  scaleFactor, 
-  labelMode, 
-  customLabels, 
-  customHighlights, 
-  highlightShared, 
-  lockedNodes, 
+const D3Visualization = ({
+  data,
+  sizeMetric,
+  scaleFactor,
+  labelMode,
+  customLabels,
+  customHighlights,
+  highlightShared,
+  lockedNodes,
   deletedNodes,
   timeframe,
   onDeleteNode,
@@ -32,8 +32,10 @@ const D3Visualization = ({
   getProcessedData
 }) => {
   const svgRef = useRef(null);
+  const containerRef = useRef(null);
   const [currentTransform, setCurrentTransform] = useState(null);
   const [contextMenu, setContextMenu] = useState({ visible: false, x: 0, y: 0, node: null });
+  const [isFullscreen, setIsFullscreen] = useState(false);
   
   // Get expanded links functionality
   const { 
@@ -61,6 +63,35 @@ const D3Visualization = ({
 
   const closeContextMenu = useCallback(() => {
     setContextMenu({ visible: false, x: 0, y: 0, node: null });
+  }, []);
+
+  // Fullscreen toggle
+  const toggleFullscreen = useCallback(() => {
+    if (!containerRef.current) return;
+
+    if (!document.fullscreenElement) {
+      containerRef.current.requestFullscreen().then(() => {
+        setIsFullscreen(true);
+      }).catch(err => {
+        console.error('Error attempting to enable fullscreen:', err);
+      });
+    } else {
+      document.exitFullscreen().then(() => {
+        setIsFullscreen(false);
+      });
+    }
+  }, []);
+
+  // Listen for fullscreen changes (e.g., user pressing ESC)
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    };
   }, []);
 
   const createVisualization = useCallback(() => {
@@ -908,16 +939,41 @@ const D3Visualization = ({
   }, [createVisualization]);
 
   return (
-    <>
-      <svg 
-        ref={svgRef} 
-        style={{ 
-          width: '100%', 
+    <div ref={containerRef} style={{ position: 'relative', width: '100%', height: '100vh' }}>
+      <svg
+        ref={svgRef}
+        style={{
+          width: '100%',
           height: '100vh',
-          background: COLORS.BACKGROUND 
-        }} 
+          background: COLORS.BACKGROUND
+        }}
       />
-      
+
+      {/* Fullscreen Button */}
+      <button
+        onClick={toggleFullscreen}
+        style={{
+          position: 'absolute',
+          top: '15px',
+          right: '15px',
+          padding: '8px 12px',
+          background: COLORS.UI_BACKGROUND,
+          border: '1px solid #555',
+          borderRadius: '4px',
+          color: COLORS.TEXT,
+          cursor: 'pointer',
+          fontSize: '12px',
+          zIndex: 1000,
+          display: 'flex',
+          alignItems: 'center',
+          gap: '6px'
+        }}
+        title={isFullscreen ? 'Exit Fullscreen (ESC)' : 'Enter Fullscreen'}
+      >
+        <span>{isFullscreen ? '⊡' : '⛶'}</span>
+        <span>{isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}</span>
+      </button>
+
       <ContextMenu
         visible={contextMenu.visible}
         x={contextMenu.x}
@@ -930,7 +986,7 @@ const D3Visualization = ({
         onAddWallet={onAddWallet}
         onDeleteNode={onDeleteNode}
       />
-    </>
+    </div>
   );
 };
 
