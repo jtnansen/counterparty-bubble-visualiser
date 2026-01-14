@@ -70,6 +70,12 @@ const App = () => {
     updateAutoScaleFactor();
   }, [data, sizeMetric, updateAutoScaleFactor]);
 
+  // Handle loading sample address from welcome screen
+  const handleLoadSample = (address) => {
+    setWalletAddress(address);
+    handleApiDataFetch(address);
+  };
+
   // Debug logging for data changes
   useEffect(() => {
     console.log('📊 App: Data changed:', {
@@ -151,7 +157,7 @@ const App = () => {
       {/* Main Content Area */}
       <div style={{ marginTop: '70px', width: '100%', height: 'calc(100vh - 70px)' }}>
         {data.length === 0 ? (
-          <WelcomeScreen />
+          <WelcomeScreen onLoadSample={handleLoadSample} />
         ) : (
           <D3Visualization
             data={data}
