@@ -61,6 +61,11 @@ const TopNavbar = ({
           type="text"
           value={walletAddress}
           onChange={(e) => setWalletAddress(e.target.value)}
+          onKeyPress={(e) => {
+            if (e.key === 'Enter' && walletAddress.trim() && !loading) {
+              handleApiDataFetch();
+            }
+          }}
           placeholder="Enter wallet address"
           disabled={loading}
           style={{

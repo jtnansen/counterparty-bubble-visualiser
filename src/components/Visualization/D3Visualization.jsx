@@ -65,34 +65,24 @@ const D3Visualization = ({
     setContextMenu({ visible: false, x: 0, y: 0, node: null });
   }, []);
 
-  // Fullscreen toggle
+  // Fullscreen toggle (pseudo-fullscreen that keeps navbar visible)
   const toggleFullscreen = useCallback(() => {
-    if (!containerRef.current) return;
-
-    if (!document.fullscreenElement) {
-      containerRef.current.requestFullscreen().then(() => {
-        setIsFullscreen(true);
-      }).catch(err => {
-        console.error('Error attempting to enable fullscreen:', err);
-      });
-    } else {
-      document.exitFullscreen().then(() => {
-        setIsFullscreen(false);
-      });
-    }
+    setIsFullscreen(prev => !prev);
   }, []);
 
-  // Listen for fullscreen changes (e.g., user pressing ESC)
+  // Listen for ESC key to exit fullscreen
   useEffect(() => {
-    const handleFullscreenChange = () => {
-      setIsFullscreen(!!document.fullscreenElement);
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape' && isFullscreen) {
+        setIsFullscreen(false);
+      }
     };
 
-    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    document.addEventListener('keydown', handleKeyDown);
     return () => {
-      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.removeEventListener('keydown', handleKeyDown);
     };
-  }, []);
+  }, [isFullscreen]);
 
   const createVisualization = useCallback(() => {
     if (!data.length || !svgRef.current) return;
@@ -939,12 +929,24 @@ const D3Visualization = ({
   }, [createVisualization]);
 
   return (
-    <div ref={containerRef} style={{ position: 'relative', width: '100%', height: '100vh' }}>
+    <div
+      ref={containerRef}
+      style={{
+        position: isFullscreen ? 'fixed' : 'relative',
+        top: isFullscreen ? '70px' : 'auto',
+        left: 0,
+        right: 0,
+        bottom: 0,
+        width: '100%',
+        height: isFullscreen ? 'calc(100vh - 70px)' : '100vh',
+        zIndex: isFullscreen ? 999 : 'auto'
+      }}
+    >
       <svg
         ref={svgRef}
         style={{
           width: '100%',
-          height: '100vh',
+          height: '100%',
           background: COLORS.BACKGROUND
         }}
       />
@@ -960,7 +962,7 @@ const D3Visualization = ({
           background: COLORS.UI_BACKGROUND,
           border: '1px solid #555',
           borderRadius: '4px',
-          color: COLORS.TEXT,
+          color: COLORS.WHITE,
           cursor: 'pointer',
           fontSize: '12px',
           zIndex: 1000,
