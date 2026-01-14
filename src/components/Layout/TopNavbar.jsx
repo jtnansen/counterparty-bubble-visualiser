@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { COLORS, UI, TIMEFRAMES, SIZE_METRICS, LABEL_MODES } from '../../utils/constants.js';
 
 const TopNavbar = ({
@@ -9,7 +9,7 @@ const TopNavbar = ({
   loading,
   isReloading,
   reloadProgress,
-  
+
   // Filter states
   sizeMetric,
   showSmartContracts,
@@ -19,7 +19,7 @@ const TopNavbar = ({
   highlightShared,
   scaleFactor,
   labelMode,
-  
+
   // Actions
   setWalletAddress,
   handleApiDataFetch,
@@ -31,8 +31,29 @@ const TopNavbar = ({
   setRangeMax,
   setHighlightShared,
   setScaleFactor,
-  setLabelMode
+  setLabelMode,
+  zoomToNode,
+  onDeleteWallet
 }) => {
+  const [showDropdown, setShowDropdown] = useState(false);
+  const dropdownRef = useRef(null);
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setShowDropdown(false);
+      }
+    };
+
+    if (showDropdown) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showDropdown]);
   return (
     <div style={{ 
       position: 'fixed', 
@@ -98,9 +119,10 @@ const TopNavbar = ({
 
       {/* Main Nodes Dropdown */}
       {data.length > 0 && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+        <div ref={dropdownRef} style={{ display: 'flex', alignItems: 'center', gap: '5px', position: 'relative' }}>
           <label style={{ fontSize: '12px', whiteSpace: 'nowrap' }}>Main Nodes:</label>
-          <select
+          <button
+            onClick={() => setShowDropdown(!showDropdown)}
             style={{
               padding: '6px 8px',
               background: COLORS.UI_BACKGROUND,
@@ -108,24 +130,95 @@ const TopNavbar = ({
               border: `1px solid ${COLORS.ACCENT}`,
               borderRadius: '4px',
               fontSize: '12px',
-              cursor: 'pointer'
+              cursor: 'pointer',
+              minWidth: '150px',
+              textAlign: 'left'
             }}
-            onChange={(e) => {
-              if (e.target.value) {
-                // Copy address to clipboard
-                navigator.clipboard.writeText(e.target.value);
-                console.log('Main node address copied:', e.target.value);
-              }
-            }}
-            defaultValue=""
           >
-            <option value="">Select node ({data.length})</option>
-            {data.map((dataset, index) => (
-              <option key={dataset.mainAddress} value={dataset.mainAddress}>
-                {dataset.mainAddress.slice(0, 10)}...{dataset.mainAddress.slice(-6)} ({dataset.transactions.length} counterparties)
-              </option>
-            ))}
-          </select>
+            Select node ({data.length}) ▼
+          </button>
+
+          {/* Custom dropdown menu */}
+          {showDropdown && (
+            <div
+              style={{
+                position: 'absolute',
+                top: '100%',
+                left: '85px',
+                marginTop: '2px',
+                background: COLORS.UI_BACKGROUND,
+                border: `1px solid ${COLORS.ACCENT}`,
+                borderRadius: '4px',
+                zIndex: UI.CONTEXT_MENU_Z_INDEX + 1,
+                minWidth: '300px',
+                maxHeight: '300px',
+                overflowY: 'auto'
+              }}
+            >
+              {data.map((dataset) => (
+                <div
+                  key={dataset.mainAddress}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '8px 10px',
+                    borderBottom: `1px solid ${COLORS.BACKGROUND}`,
+                    fontSize: '12px',
+                    color: COLORS.WHITE
+                  }}
+                >
+                  <span
+                    onClick={() => {
+                      // Copy address to clipboard
+                      navigator.clipboard.writeText(dataset.mainAddress);
+                      console.log('Main node address copied:', dataset.mainAddress);
+
+                      // Zoom to the selected node
+                      if (zoomToNode) {
+                        zoomToNode(dataset.mainAddress);
+                      }
+
+                      setShowDropdown(false);
+                    }}
+                    style={{
+                      flex: 1,
+                      cursor: 'pointer',
+                      padding: '4px'
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.color = COLORS.ACCENT;
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.color = COLORS.WHITE;
+                    }}
+                  >
+                    {dataset.mainAddress.slice(0, 10)}...{dataset.mainAddress.slice(-6)} ({dataset.transactions.length} counterparties)
+                  </span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (onDeleteWallet) {
+                        onDeleteWallet(dataset.mainAddress, true);
+                      }
+                    }}
+                    style={{
+                      background: 'transparent',
+                      border: 'none',
+                      color: '#FF7F7B',
+                      cursor: 'pointer',
+                      fontSize: '16px',
+                      padding: '0 4px',
+                      marginLeft: '8px'
+                    }}
+                    title="Delete wallet"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

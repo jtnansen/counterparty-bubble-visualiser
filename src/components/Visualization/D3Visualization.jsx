@@ -29,13 +29,15 @@ const D3Visualization = ({
   onSetCustomHighlight,
   onToggleNodeLock,
   onAddWallet,
-  getProcessedData
+  getProcessedData,
+  onZoomToNode
 }) => {
   const svgRef = useRef(null);
   const containerRef = useRef(null);
   const [currentTransform, setCurrentTransform] = useState(null);
   const [contextMenu, setContextMenu] = useState({ visible: false, x: 0, y: 0, node: null });
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const zoomRef = useRef(null);
   
   // Get expanded links functionality
   const { 
@@ -67,7 +69,12 @@ const D3Visualization = ({
 
   // Fullscreen toggle (pseudo-fullscreen that keeps navbar visible)
   const toggleFullscreen = useCallback(() => {
-    setIsFullscreen(prev => !prev);
+    console.log('🔲 Fullscreen button clicked!');
+    setIsFullscreen(prev => {
+      const newValue = !prev;
+      console.log('🔲 Toggling fullscreen from', prev, 'to', newValue);
+      return newValue;
+    });
   }, []);
 
   // Listen for ESC key to exit fullscreen
@@ -83,6 +90,41 @@ const D3Visualization = ({
       document.removeEventListener('keydown', handleKeyDown);
     };
   }, [isFullscreen]);
+
+  // Function to zoom and center on a specific node
+  const zoomToNode = useCallback((address) => {
+    if (!zoomRef.current) {
+      console.warn('⚠️ Zoom not initialized yet');
+      return;
+    }
+
+    const { svg, zoom, nodes, width, height } = zoomRef.current;
+    const node = nodes.find(n => n.id === address);
+
+    if (!node) {
+      console.warn('⚠️ Node not found:', address);
+      return;
+    }
+
+    console.log('🎯 Zooming to node:', { address, x: node.x, y: node.y });
+
+    // Calculate transform to center the node
+    const scale = 1.5; // Zoom level
+    const x = width / 2 - node.x * scale;
+    const y = height / 2 - node.y * scale;
+
+    // Apply the transform with animation
+    svg.transition()
+      .duration(750)
+      .call(zoom.transform, d3.zoomIdentity.translate(x, y).scale(scale));
+  }, []);
+
+  // Expose zoomToNode via prop callback
+  useEffect(() => {
+    if (onZoomToNode) {
+      onZoomToNode(zoomToNode);
+    }
+  }, [onZoomToNode, zoomToNode]);
 
   const createVisualization = useCallback(() => {
     if (!data.length || !svgRef.current) return;
@@ -280,6 +322,16 @@ const D3Visualization = ({
           // Zoom transform applied to container only - links maintain constant width
           container.style('transform', `translate(${transform.x}px,${transform.y}px) scale(${transform.k})`);
         });
+
+      // Store zoom behavior in ref for external access
+      zoomRef.current = {
+        zoom,
+        svg,
+        container,
+        nodes,
+        width,
+        height
+      };
 
       // Add arrow markers
       const defs = svg.append('defs');
@@ -928,6 +980,9 @@ const D3Visualization = ({
     return () => window.removeEventListener('resize', handleResize);
   }, [createVisualization]);
 
+  // Debug: Log render state
+  console.log('🔲 D3Visualization rendering with isFullscreen:', isFullscreen);
+
   return (
     <div
       ref={containerRef}
@@ -939,7 +994,8 @@ const D3Visualization = ({
         bottom: 0,
         width: '100%',
         height: isFullscreen ? 'calc(100vh - 70px)' : '100vh',
-        zIndex: isFullscreen ? 999 : 'auto'
+        zIndex: isFullscreen ? 999 : 'auto',
+        backgroundColor: COLORS.BACKGROUND
       }}
     >
       <svg

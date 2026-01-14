@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useVisualizationData } from './hooks/useVisualizationData.js';
 import D3Visualization from './components/Visualization/D3Visualization.jsx';
 import TopNavbar from './components/Layout/TopNavbar.jsx';
@@ -7,6 +7,8 @@ import DeletedNodesWidget from './components/Layout/DeletedNodesWidget.jsx';
 import { COLORS, UI, TIMEFRAMES, SIZE_METRICS, LABEL_MODES } from './utils/constants.js';
 
 const App = () => {
+  // Store the zoomToNode function from D3Visualization
+  const [zoomToNodeFn, setZoomToNodeFn] = useState(null);
   // Use the custom hooks for data management
   const {
     // Data state
@@ -120,6 +122,8 @@ const App = () => {
         setHighlightShared={setHighlightShared}
         setScaleFactor={setScaleFactor}
         setLabelMode={setLabelMode}
+        zoomToNode={zoomToNodeFn}
+        onDeleteWallet={deleteNode}
       />
 
       {/* Error Display */}
@@ -162,6 +166,7 @@ const App = () => {
             onToggleNodeLock={toggleNodeLock}
             onAddWallet={handleApiDataFetch}
             getProcessedData={getProcessedData}
+            onZoomToNode={setZoomToNodeFn}
           />
         )}
       </div>
