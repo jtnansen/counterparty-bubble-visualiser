@@ -97,18 +97,23 @@ export const positionNewCounterpartyNode = (node, mainNode, width, height) => {
 /**
  * Get stroke color for a node based on its properties and state
  */
-export const getNodeStrokeColor = (node, customHighlights, highlightShared) => {
+export const getNodeStrokeColor = (node, customHighlights, highlightShared, selectedNodeId = null) => {
   const customHighlight = customHighlights.get(node.id);
   if (customHighlight) return customHighlight;
-  
+
+  // Highlight selected node from dropdown
+  if (selectedNodeId && node.id === selectedNodeId) {
+    return COLORS.BLUE_HIGHLIGHT;
+  }
+
   if (node.isMain) {
     return COLORS.MAIN_NODE_STROKE;
   }
-  
+
   if (highlightShared && node.connectedMainAddresses?.size > 1) {
     return COLORS.BLUE_HIGHLIGHT;
   }
-  
+
   return node.usdNetflow > 0 ? COLORS.GREEN_STROKE : COLORS.RED_STROKE;
 };
 

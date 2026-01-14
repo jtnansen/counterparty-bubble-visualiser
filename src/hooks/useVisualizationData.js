@@ -312,38 +312,65 @@ export const useVisualizationData = () => {
   // Node management functions
   const deleteNode = useCallback((nodeId, isMainNode = false) => {
     if (isMainNode) {
-      // Remove the main node's data from the data array
-      setData(prevData => prevData.filter(d => d.mainAddress !== nodeId));
-    } else {
-      // Save the node data for restoration
+      // Save the main node data for restoration
       const { nodes } = getProcessedData();
       const nodeToDelete = nodes.find(n => n.id === nodeId);
-      
+
       if (nodeToDelete) {
         setDeletedNodesData(prev => new Map(prev).set(nodeId, {
           ...nodeToDelete,
           deletedAt: new Date().toISOString()
         }));
       }
-      
+
+      // Remove the main node's data from the data array
+      setData(prevData => prevData.filter(d => d.mainAddress !== nodeId));
+    } else {
+      // Save the node data for restoration
+      const { nodes } = getProcessedData();
+      const nodeToDelete = nodes.find(n => n.id === nodeId);
+
+      if (nodeToDelete) {
+        setDeletedNodesData(prev => new Map(prev).set(nodeId, {
+          ...nodeToDelete,
+          deletedAt: new Date().toISOString()
+        }));
+      }
+
       // Add to deleted nodes set
       setDeletedNodes(prev => new Set(prev).add(nodeId));
     }
   }, [getProcessedData]);
 
   const restoreNode = useCallback((nodeId) => {
-    setDeletedNodes(prev => {
-      const newSet = new Set(prev);
-      newSet.delete(nodeId);
-      return newSet;
-    });
-    
+    // Check if this was a main node
+    const nodeData = deletedNodesData.get(nodeId);
+
+    if (nodeData && nodeData.isMain) {
+      // For main nodes, we need to restore the full dataset
+      // Find the original dataset from the node data
+      const mainAddress = nodeId;
+
+      // We can't fully restore a main node without re-fetching the data
+      // So we'll just remove it from deletedNodesData
+      // The user will need to re-add the wallet to see it again
+      console.log('Cannot fully restore main node - please re-add the wallet address');
+    } else {
+      // For counterparty nodes, remove from deleted set
+      setDeletedNodes(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(nodeId);
+        return newSet;
+      });
+    }
+
+    // Always remove from deletedNodesData
     setDeletedNodesData(prev => {
       const newMap = new Map(prev);
       newMap.delete(nodeId);
       return newMap;
     });
-  }, []);
+  }, [deletedNodesData]);
 
   const removeDeletedNodePermanently = useCallback((nodeId) => {
     setDeletedNodesData(prev => {

@@ -24,6 +24,7 @@ const D3Visualization = ({
   lockedNodes,
   deletedNodes,
   timeframe,
+  selectedNodeId,
   onDeleteNode,
   onSetCustomLabel,
   onSetCustomHighlight,
@@ -682,9 +683,10 @@ const D3Visualization = ({
       node.append('circle')
         .attr('r', d => calculateRadius(d, sizeMetric, scaleFactor))
         .attr('fill', d => getNodeFillColor(d))
-        .attr('stroke', d => getNodeStrokeColor(d, customHighlights, highlightShared))
+        .attr('stroke', d => getNodeStrokeColor(d, customHighlights, highlightShared, selectedNodeId))
         .attr('stroke-width', d => {
           if (customHighlights.has(d.id)) return SIZES.STROKE_WIDTH.HIGHLIGHTED;
+          if (selectedNodeId && d.id === selectedNodeId) return SIZES.STROKE_WIDTH.HIGHLIGHTED;
           if (d.isMain) return SIZES.STROKE_WIDTH.MAIN_NODE;
           const radius = calculateRadius(d, sizeMetric, scaleFactor);
           return Math.max(1, radius * SIZES.STROKE_WIDTH.COUNTERPARTY_BASE);
@@ -963,7 +965,7 @@ const D3Visualization = ({
     } catch (error) {
       console.error('Error creating visualization:', error);
     }
-  }, [data, sizeMetric, scaleFactor, labelMode, customLabels, customHighlights, highlightShared, lockedNodes, deletedNodes, expandedLinks, getProcessedData, processLinksWithExpansions, toggleLinkExpansion, timeframe, closeContextMenu]);
+  }, [data, sizeMetric, scaleFactor, labelMode, customLabels, customHighlights, highlightShared, lockedNodes, deletedNodes, expandedLinks, getProcessedData, processLinksWithExpansions, toggleLinkExpansion, timeframe, closeContextMenu, selectedNodeId]);
 
   // Effect to trigger visualization updates
   useEffect(() => {
@@ -1011,8 +1013,8 @@ const D3Visualization = ({
       <button
         onClick={toggleFullscreen}
         style={{
-          position: 'absolute',
-          top: '15px',
+          position: 'fixed',
+          top: isFullscreen ? '80px' : '80px',
           right: '15px',
           padding: '8px 12px',
           background: COLORS.UI_BACKGROUND,
@@ -1021,7 +1023,7 @@ const D3Visualization = ({
           color: COLORS.WHITE,
           cursor: 'pointer',
           fontSize: '12px',
-          zIndex: 1000,
+          zIndex: 1001,
           display: 'flex',
           alignItems: 'center',
           gap: '6px'

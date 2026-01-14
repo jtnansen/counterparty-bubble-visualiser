@@ -33,7 +33,9 @@ const TopNavbar = ({
   setScaleFactor,
   setLabelMode,
   zoomToNode,
-  onDeleteWallet
+  onDeleteWallet,
+  selectedNodeId,
+  setSelectedNodeId
 }) => {
   const [showDropdown, setShowDropdown] = useState(false);
   const dropdownRef = useRef(null);
@@ -43,6 +45,10 @@ const TopNavbar = ({
     const handleClickOutside = (event) => {
       if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
         setShowDropdown(false);
+        // Clear the selected node when dropdown closes
+        if (setSelectedNodeId) {
+          setSelectedNodeId(null);
+        }
       }
     };
 
@@ -53,7 +59,7 @@ const TopNavbar = ({
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [showDropdown]);
+  }, [showDropdown, setSelectedNodeId]);
   return (
     <div style={{ 
       position: 'fixed', 
@@ -174,12 +180,15 @@ const TopNavbar = ({
                       navigator.clipboard.writeText(dataset.mainAddress);
                       console.log('Main node address copied:', dataset.mainAddress);
 
+                      // Set selected node for highlighting
+                      if (setSelectedNodeId) {
+                        setSelectedNodeId(dataset.mainAddress);
+                      }
+
                       // Zoom to the selected node
                       if (zoomToNode) {
                         zoomToNode(dataset.mainAddress);
                       }
-
-                      setShowDropdown(false);
                     }}
                     style={{
                       flex: 1,

@@ -9,6 +9,8 @@ import { COLORS, UI, TIMEFRAMES, SIZE_METRICS, LABEL_MODES } from './utils/const
 const App = () => {
   // Store the zoomToNode function from D3Visualization
   const [zoomToNodeFn, setZoomToNodeFn] = useState(null);
+  // Track selected node from dropdown for highlighting
+  const [selectedNodeId, setSelectedNodeId] = useState(null);
   // Use the custom hooks for data management
   const {
     // Data state
@@ -124,6 +126,8 @@ const App = () => {
         setLabelMode={setLabelMode}
         zoomToNode={zoomToNodeFn}
         onDeleteWallet={deleteNode}
+        selectedNodeId={selectedNodeId}
+        setSelectedNodeId={setSelectedNodeId}
       />
 
       {/* Error Display */}
@@ -160,6 +164,7 @@ const App = () => {
             lockedNodes={lockedNodes}
             deletedNodes={deletedNodes}
             timeframe={timeframe}
+            selectedNodeId={selectedNodeId}
             onDeleteNode={deleteNode}
             onSetCustomLabel={setCustomLabel}
             onSetCustomHighlight={setCustomHighlight}
