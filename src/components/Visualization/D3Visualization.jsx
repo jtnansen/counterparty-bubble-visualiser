@@ -364,31 +364,71 @@ const D3Visualization = ({
           })
           .on('click', async function(event, d) {
             if (d.isTransactionLink) return;
-            
+
             const sourceNode = currentAddressMap.get(d.source.id || d.source);
             const targetNode = currentAddressMap.get(d.target.id || d.target);
-            
+
             if (!((sourceNode?.isMain && !targetNode?.isMain) || (!sourceNode?.isMain && targetNode?.isMain))) {
               return;
             }
-            
+
             event.stopPropagation();
-            
+
             const mainNode = sourceNode?.isMain ? sourceNode : targetNode;
             const counterpartyNode = sourceNode?.isMain ? targetNode : sourceNode;
-            
+
             if (mainNode && counterpartyNode) {
               const result = await toggleLinkExpansion(mainNode.id, counterpartyNode.id);
               if (result.expanded || result.collapsed) {
                 updateLinksInPlace();
               }
             }
+          })
+          .on('mouseenter', function(event, d) {
+            if (d.isTransactionLink && d.transaction) {
+              const tx = d.transaction;
+              let tokenSymbol = 'Unknown';
+              let tokenAmount = '';
+
+              // v1 API uses objects with token_symbol property, not arrays
+              if (tx.tokensSent && tx.tokensSent.length > 0) {
+                const token = tx.tokensSent[0];
+                tokenSymbol = token.token_symbol || 'Unknown';
+                if (token.token_amount) {
+                  tokenAmount = ` (${Number(token.token_amount).toLocaleString()})`;
+                }
+              } else if (tx.tokensReceived && tx.tokensReceived.length > 0) {
+                const token = tx.tokensReceived[0];
+                tokenSymbol = token.token_symbol || 'Unknown';
+                if (token.token_amount) {
+                  tokenAmount = ` (${Number(token.token_amount).toLocaleString()})`;
+                }
+              }
+
+              const tooltipContent = `<strong>${formatNumber(tx.volumeUsd)}</strong><br>${tokenSymbol}${tokenAmount}<br><small>${new Date(tx.blockTimestamp).toLocaleDateString()}</small>`;
+
+              tooltip
+                .style('display', 'block')
+                .html(tooltipContent)
+                .style('left', `${event.pageX + UI.TOOLTIP_OFFSET}px`)
+                .style('top', `${event.pageY - UI.TOOLTIP_OFFSET}px`);
+            }
+          })
+          .on('mouseleave', function() {
+            tooltip.style('display', 'none');
+          })
+          .on('mousemove', function(event) {
+            if (tooltip.style('display') === 'block') {
+              tooltip
+                .style('left', `${event.pageX + UI.TOOLTIP_OFFSET}px`)
+                .style('top', `${event.pageY - UI.TOOLTIP_OFFSET}px`);
+            }
           });
-        
+
         // Update simulation with new links
         simulation.force('link').links(updatedFinalLinks);
         simulation.alpha(0.1).restart(); // Gentle restart
-        
+
         // Update the link reference
         link = allLinks;
       };
@@ -468,14 +508,25 @@ const D3Visualization = ({
           if (d.isTransactionLink && d.transaction) {
             const tx = d.transaction;
             let tokenSymbol = 'Unknown';
-            if (tx.tokenSent && tx.tokenSent.length > 0 && tx.tokenSent[0].length > 0) {
-              tokenSymbol = tx.tokenSent[0][0];
-            } else if (tx.tokenReceived && tx.tokenReceived.length > 0 && tx.tokenReceived[0].length > 0) {
-              tokenSymbol = tx.tokenReceived[0][0];
+            let tokenAmount = '';
+
+            // v1 API uses objects with token_symbol property, not arrays
+            if (tx.tokensSent && tx.tokensSent.length > 0) {
+              const token = tx.tokensSent[0];
+              tokenSymbol = token.token_symbol || 'Unknown';
+              if (token.token_amount) {
+                tokenAmount = ` (${Number(token.token_amount).toLocaleString()})`;
+              }
+            } else if (tx.tokensReceived && tx.tokensReceived.length > 0) {
+              const token = tx.tokensReceived[0];
+              tokenSymbol = token.token_symbol || 'Unknown';
+              if (token.token_amount) {
+                tokenAmount = ` (${Number(token.token_amount).toLocaleString()})`;
+              }
             }
-            
-            const tooltipContent = `<strong>${formatNumber(tx.volumeUsd)}</strong><br>${tokenSymbol}<br><small>${new Date(tx.blockTimestamp).toLocaleDateString()}</small>`;
-            
+
+            const tooltipContent = `<strong>${formatNumber(tx.volumeUsd)}</strong><br>${tokenSymbol}${tokenAmount}<br><small>${new Date(tx.blockTimestamp).toLocaleDateString()}</small>`;
+
             tooltip
               .style('display', 'block')
               .html(tooltipContent)

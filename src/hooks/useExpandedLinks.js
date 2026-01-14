@@ -93,17 +93,17 @@ export const useExpandedLinks = (timeframe) => {
               counterpartyNodeId: counterpartyNode.id
             });
             
-            // Fix direction detection - focus on primary transaction direction
+            // Fix direction detection for v1 API - use object properties not array indices
             let isOutgoing = false;
             let debugInfo = {};
-            
-            // Check if main address is sending the primary token
-            if (tx.tokenSent && tx.tokenSent.length > 0) {
-              const tokenSentData = tx.tokenSent[0];
-              const fromAddr = tokenSentData[9]; // fromAddr2 field
-              const toAddr = tokenSentData[10]; // toAddr2 field
-              const sentAmount = tokenSentData[3]; // USD value
-              
+
+            // Check if main address is sending tokens (v1 API uses object with named properties)
+            if (tx.tokensSent && tx.tokensSent.length > 0) {
+              const tokenSentData = tx.tokensSent[0];
+              const fromAddr = tokenSentData.from_address;
+              const toAddr = tokenSentData.to_address;
+              const sentAmount = tokenSentData.value_usd;
+
               debugInfo.tokenSent = {
                 fromAddr,
                 toAddr,
@@ -111,21 +111,21 @@ export const useExpandedLinks = (timeframe) => {
                 isMainSender: fromAddr?.toLowerCase() === mainNode.id.toLowerCase(),
                 isCounterpartyReceiver: toAddr?.toLowerCase() === counterpartyNode.id.toLowerCase()
               };
-              
+
               // If main is sender TO counterparty, it's outgoing
-              if (fromAddr?.toLowerCase() === mainNode.id.toLowerCase() && 
+              if (fromAddr?.toLowerCase() === mainNode.id.toLowerCase() &&
                   toAddr?.toLowerCase() === counterpartyNode.id.toLowerCase()) {
                 isOutgoing = true;
               }
             }
-            
-            // Check if main address is receiving the primary token
-            if (tx.tokenReceived && tx.tokenReceived.length > 0) {
-              const tokenReceivedData = tx.tokenReceived[0];
-              const fromAddr = tokenReceivedData[9]; // fromAddr2 field
-              const toAddr = tokenReceivedData[10]; // toAddr2 field
-              const receivedAmount = tokenReceivedData[3]; // USD value
-              
+
+            // Check if main address is receiving tokens
+            if (tx.tokensReceived && tx.tokensReceived.length > 0) {
+              const tokenReceivedData = tx.tokensReceived[0];
+              const fromAddr = tokenReceivedData.from_address;
+              const toAddr = tokenReceivedData.to_address;
+              const receivedAmount = tokenReceivedData.value_usd;
+
               debugInfo.tokenReceived = {
                 fromAddr,
                 toAddr,
@@ -133,20 +133,34 @@ export const useExpandedLinks = (timeframe) => {
                 isCounterpartySender: fromAddr?.toLowerCase() === counterpartyNode.id.toLowerCase(),
                 isMainReceiver: toAddr?.toLowerCase() === mainNode.id.toLowerCase()
               };
-              
+
               // If counterparty is sender TO main, it's incoming (and not already determined as outgoing)
-              if (!isOutgoing && 
-                  fromAddr?.toLowerCase() === counterpartyNode.id.toLowerCase() && 
+              if (!isOutgoing &&
+                  fromAddr?.toLowerCase() === counterpartyNode.id.toLowerCase() &&
                   toAddr?.toLowerCase() === mainNode.id.toLowerCase()) {
                 isOutgoing = false;
               }
             }
-            
-            // If we still haven't determined direction, use the volumeUsd sign or default logic
+
+            // If we still haven't determined direction, use the volumeUsd sign
             if (!debugInfo.tokenSent?.isMainSender && !debugInfo.tokenReceived?.isMainReceiver) {
-              // Fallback to original aggregated link direction
-              isOutgoing = tx.volumeUsd < 0;
+              // Fallback: determine from primary token flow
+              // If main appears as sender in tokensSent, it's outgoing
+              // If main appears as receiver in tokensReceived, it's incoming
               debugInfo.fallback = true;
+              debugInfo.volumeUsd = tx.volumeUsd;
+
+              // Default to checking which tokens involve the counterparty
+              const hasSentToCounterparty = tx.tokensSent?.some(t =>
+                t.from_address?.toLowerCase() === mainNode.id.toLowerCase() ||
+                t.to_address?.toLowerCase() === counterpartyNode.id.toLowerCase()
+              );
+              const hasReceivedFromCounterparty = tx.tokensReceived?.some(t =>
+                t.from_address?.toLowerCase() === counterpartyNode.id.toLowerCase() ||
+                t.to_address?.toLowerCase() === mainNode.id.toLowerCase()
+              );
+
+              isOutgoing = hasSentToCounterparty && !hasReceivedFromCounterparty;
             }
             
             const direction = isOutgoing ? 'outgoing' : 'incoming';
