@@ -59,7 +59,25 @@ export default async function handler(req, res) {
 
     // Get the response data only once
     const data = await response.json();
-    return res.status(200).json(data);
+
+    // Transform v1 API response to match frontend expectations
+    const transformedCounterparties = (data.data || []).map(cp => ({
+      interactingAddress: cp.counterparty_address,
+      interactingLabel: Array.isArray(cp.counterparty_address_label)
+        ? cp.counterparty_address_label.join(', ')
+        : (cp.counterparty_address_label || ''),
+      volIn: String(cp.volume_in_usd || 0),
+      volOut: String(cp.volume_out_usd || 0),
+      usdNetflow: String((cp.volume_in_usd || 0) - (cp.volume_out_usd || 0)),
+      totalVolume: cp.total_volume_usd,
+      interactionCount: cp.interaction_count,
+      tokensInfo: cp.tokens_info
+    }));
+
+    return res.status(200).json({
+      counterparties: transformedCounterparties,
+      pagination: data.pagination
+    });
   } catch (error) {
     console.error('Proxy error:', error);
     return res.status(500).json({ error: 'Internal server error', details: error.message });
