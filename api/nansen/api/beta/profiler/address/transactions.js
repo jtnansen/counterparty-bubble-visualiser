@@ -22,6 +22,9 @@ export default async function handler(req, res) {
     const fromDate = filters.blockTimestamp?.from ? `${filters.blockTimestamp.from}T00:00:00Z` : undefined;
     const toDate = filters.blockTimestamp?.to ? `${filters.blockTimestamp.to}T23:59:59Z` : undefined;
 
+    // Store counterparty address for client-side filtering
+    const counterpartyAddressFilter = filters.counterpartyAddressHex;
+
     const transformedBody = {
       address: Array.isArray(params.walletAddresses) ? params.walletAddresses[0] : params.walletAddresses,
       chain: params.chain,
@@ -37,15 +40,14 @@ export default async function handler(req, res) {
       filters: {
         volume_usd: filters.volumeUsd?.from ? {
           min: filters.volumeUsd.from
-        } : undefined,
-        counterparty_address_hex: filters.counterpartyAddressHex
+        } : undefined
       }
     };
 
     // Remove undefined fields
     if (!transformedBody.date) delete transformedBody.date;
     if (!transformedBody.filters.volume_usd) delete transformedBody.filters.volume_usd;
-    if (!transformedBody.filters.counterparty_address_hex) delete transformedBody.filters.counterparty_address_hex;
+    if (Object.keys(transformedBody.filters).length === 0) delete transformedBody.filters;
 
     // Proxy the request to Nansen API
     const response = await fetch('https://api.nansen.ai/api/v1/profiler/address/transactions', {
@@ -72,8 +74,7 @@ export default async function handler(req, res) {
     const data = await response.json();
 
     // Transform v1 API response to match frontend expectations
-    // Frontend expects transaction objects with specific field names
-    const transformedTransactions = (data.data || []).map(tx => ({
+    let transformedTransactions = (data.data || []).map(tx => ({
       chain: tx.chain,
       method: tx.method,
       tokensSent: tx.tokens_sent,
@@ -84,9 +85,29 @@ export default async function handler(req, res) {
       sourceType: tx.source_type
     }));
 
+    // Filter by counterparty address if specified (client-side filtering)
+    if (counterpartyAddressFilter) {
+      transformedTransactions = transformedTransactions.filter(tx => {
+        // Check if counterparty address is in tokens_sent or tokens_received
+        const hasCounterpartyInSent = tx.tokensSent?.some(token =>
+          token.from_address === counterpartyAddressFilter ||
+          token.to_address === counterpartyAddressFilter
+        );
+        const hasCounterpartyInReceived = tx.tokensReceived?.some(token =>
+          token.from_address === counterpartyAddressFilter ||
+          token.to_address === counterpartyAddressFilter
+        );
+        return hasCounterpartyInSent || hasCounterpartyInReceived;
+      });
+    }
+
     return res.status(200).json({
       data: transformedTransactions,
-      pagination: data.pagination
+      pagination: {
+        ...data.pagination,
+        // Update pagination to reflect filtered results
+        per_page: transformedTransactions.length
+      }
     });
   } catch (error) {
     console.error('Proxy error:', error);
